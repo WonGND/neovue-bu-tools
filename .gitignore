@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+*.pyo
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+
+# PyInstaller artifacts
+*.exe
+*.zip
+
+# Local logs/temp
+*_log.txt
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
