@@ -8,12 +8,21 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
+import sys
+
 import numpy as np
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.formatting.rule import CellIsRule, FormulaRule
 from openpyxl.styles import PatternFill
 from PIL import Image
+
+# v0.6: 공용 모듈(common/) 경로 — 소스 실행 시 ../common, exe는 spec에서 함께 묶음
+_HERE = Path(__file__).resolve().parent
+for _p in (_HERE.parent / "common", _HERE / "common"):
+    if _p.exists() and str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+TOOL_VERSION = "v0.6"
 
 # 처리 대상 이미지 확장자
 ALLOWED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp")
@@ -277,7 +286,8 @@ def crop_images(merged_root: Path, cropped_root: Path, threshold: int, padding: 
 
     return records
 
-def write_excel(records, excel_path: Path, latest_measurements=None, image_width_px: int = 240, cancel_check=None):
+def write_excel(records, excel_path: Path, latest_measurements=None, image_width_px: int = 240, cancel_check=None,
+                extra=None):
     wb = Workbook()
     ws = wb.active
     ws.title = "결과"
@@ -326,10 +336,68 @@ def write_excel(records, excel_path: Path, latest_measurements=None, image_width
     for col, width in zip("ABCDEF", [26, 12, 14, 36, 14, 36]):
         ws.column_dimensions[col].width = width
 
+    if extra is not None:                      # v0.6: 공정능력 시트 (실패해도 결과 시트는 저장)
+        try:
+            extra(wb)
+        except Exception as exc:
+            print(f"  공정능력 시트를 만들지 못했습니다: {exc}")
+
     print("\n메인 엑셀 저장")
     wb.save(excel_path)
 
-def run_pipeline(integrated_root: Path, data_root: Path, threshold: int, padding: int, cancel_check=None) -> dict:
+def capability_sheet_writer(latest_measurements: dict, records: list):
+    """(4번 ②안) 판정 = 이번 실행에서 고른 측정 CSV 전체(LotID별 최신), 이미지 정리본 LotID는 참고로 표시"""
+    def add(wb):
+        try:                                    # 무거운 모듈은 시트를 만들 때만 불러옴 (실행 시작 속도 유지)
+            import pandas as pd
+            import capability_sheet
+            from capability import is_constant
+        except ImportError as exc:
+            print(f"  공정능력 시트 생략 (필요한 모듈 없음: {exc})")
+            return
+        if not latest_measurements:
+            print("  공정능력 시트 생략 (측정 CSV 없음)")
+            return
+        rows = []
+        for key, m in latest_measurements.items():
+            bu, wu = excel_measurement_value(m.get("black_uniformity")), excel_measurement_value(m.get("white_uniformity"))
+            rows.append({"key": key, "LotID": m.get("lot_id", key), "time": m.get("time_raw"), "model": m.get("model_name", ""),
+                         "BU": bu if isinstance(bu, float) else np.nan, "WU": wu if isinstance(wu, float) else np.nan})
+        full = pd.DataFrame(rows)
+        image_lots = {rec["lot_id"] for rec in records if rec.get("dst")}
+        sub_keys = set()
+        for lot in image_lots:
+            m = find_measurement(lot, latest_measurements)
+            if m:
+                sub_keys.add(normalize_lot_id(m["lot_id"]))
+        sub_mask = full["key"].isin(sub_keys)
+        bu_vals = full["BU"].dropna()
+        ld = bool(len(bu_vals) > 1 and is_constant(bu_vals))
+        models = [str(x) for x in full["model"] if str(x or "").strip()]
+        model = max(set(models), key=models.count) if models else ""
+        if not model:
+            codes = [re.search(r"V[A-Z]{2}\d{3}[A-Z]{4}\d{2}", str(x)) for x in full["LotID"]]
+            codes = [c.group(0) for c in codes if c]
+            model = max(set(codes), key=codes.count) if codes else ""
+        files = {m.get("source_file") for m in latest_measurements.values()}
+        caps = capability_sheet.write_compare_sheet(
+            wb, full[["LotID", "WU", "BU", "time"]], sub_mask, ld,
+            {"model": model, "csv_files": len(files), "version": f"Tool B {TOOL_VERSION}"})
+        print(f"\n[공정능력] 측정 전체 n={len(full)} · 이미지 정리본 n={int(sub_mask.sum())}" + (" · LD 모델(BU 제외)" if ld else ""))
+        for name in ("WU", "BU"):
+            a, b = caps[name]
+            if a.ld:
+                print(f"  {name}: N/A (LD 모델)")
+            elif a.n >= 2:
+                txt = f"  {name}: 전체 Cp {a.cp:.2f} / Cpk {a.cpk:.2f} [{a.verdict}]"
+                if b.n >= 2:
+                    txt += f" · 정리본 Cp {b.cp:.2f} / Cpk {b.cpk:.2f}"
+                print(txt)
+    return add
+
+
+def run_pipeline(integrated_root: Path, data_root: Path, threshold: int, padding: int, cancel_check=None,
+                 make_capability: bool = True) -> dict:
     cropped_root = integrated_root.parent / f"{integrated_root.name}_LotID_latest_v1_cropped_v1"
     excel_path = cropped_root / "crop_report.xlsx"
 
@@ -343,15 +411,16 @@ def run_pipeline(integrated_root: Path, data_root: Path, threshold: int, padding
     latest_m, _ = collect_latest_measurements(data_root, cancel_check)
     crop_records = crop_images(merged_root, cropped_root, threshold, padding, cancel_check)
     
-    write_excel(crop_records, excel_path, latest_m, cancel_check=cancel_check)
+    extra = capability_sheet_writer(latest_m, crop_records) if make_capability else None
+    write_excel(crop_records, excel_path, latest_m, cancel_check=cancel_check, extra=extra)
 
-    print("\n--- 최종 결과 (v0.5 Optimized) ---")
+    print(f"\n--- 최종 결과 ({TOOL_VERSION}) ---")
     print(f"완료! (성공: {sum(1 for r in crop_records if r['status']=='OK')})")
 
     return {"excel_path": excel_path}
 
 if __name__ == "__main__":
-    print("\n--- BU Organize One Click v0.5 Optimized ---")
+    print(f"\n--- BU Organize One Click {TOOL_VERSION} ---")
     ir = Path(input("1) 이미지 통합 폴더: ").strip())
     dr = Path(input("2) 측정 데이터 폴더: ").strip())
     th = int(input("3) 임계값 [12]: ") or 12)

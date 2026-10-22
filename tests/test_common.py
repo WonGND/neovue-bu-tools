@@ -70,7 +70,56 @@ check(m["매핑상태"].iloc[0].startswith("겹침"), "두 이벤트 기간이 �
 events.loc[1, "시작일"] = date(2026, 5, 1)
 events.loc[1, "종료일"] = date(2026, 5, 2)
 m = db.assign_events(data, events)
-check(list(m["이벤트"]) == ["A", "A"], "기간 안 → 이벤트 A")
+check(list(m["이벤트"]) == ["A", "A"], "기간 안 → 이벤트 A (v0.1 기간 이벤트)")
 events.loc[0, "모델"] = "IND"
-check(set(db.assign_events(data, events)["매핑상태"]) == {"기간 밖"}, "모델 불일치 → 기간 밖")
+check(set(db.assign_events(data, events)["매핑상태"]) == {"미지정"}, "모델 불일치 → 미지정")
+
+print("[4] v0.2 날짜 묶기 · 중복 방지 · 공용 DB")
+events.loc[0, "모델"] = "WINE"
+db.save_events(p, events)
+data, events = db.load(p)
+check(set(events["구분"]) == {"기간"}, "v0.1 이벤트는 '기간'으로 읽음")
+data, events, n = db.migrate_period_events(data, events)
+check(n == 2 and set(data[db.LABEL]) == {"A"} and set(events["구분"]) == {"묶음"}, "기간 이벤트 → 행에 이벤트 붙임(묶음 전환)")
+db.save(p, data, events)
+up = rows.assign(측정일시=[datetime(2026, 4, 16)] * 2, 출처=db.UPLOAD_SOURCE, **{db.LABEL: "B"})
+st = db.append_rows(p, up, label_dups=True)
+check(st["added"] == 0 and st["skipped"] == 2, "같은 측정(LotID·WU·BU)은 시각이 달라도 다시 넣지 않음")
+check(st["relabeled"] == 0, "이미 이벤트가 있는 행은 다른 이벤트로 바꾸지 않음")
+p2 = TMP / "test_db2.xlsx"
+p2.unlink(missing_ok=True)
+db.append_rows(p2, up.assign(**{db.LABEL: ""}))                    # 과거 파일 먼저 (미지정)
+st = db.append_rows(p2, rows.assign(출처="Tool A v1.5"))            # 같은 측정이 Tool A로 들어옴
+d2, _ = db.load(p2)
+check(st["upgraded"] == 2 and len(d2) == 2 and d2["측정일시"].dt.hour.tolist() == [8, 9], "업로드분 → Tool A 측정 시각으로 보강")
+st = db.append_rows(p2, up.assign(**{db.LABEL: "C"}), label_dups=True)
+d2, e2 = db.load(p2)
+check(st["relabeled"] == 2 and set(d2[db.LABEL]) == {"C"} and "C" in set(e2["이벤트명"]), "미지정 행은 파일 추가 때 고른 이벤트로 묶임")
+key = db.day_key(d2).iloc[0]
+check(db.set_label(p2, [("C", key)], "") == 2 and set(db.load(p2)[0][db.LABEL]) == {""}, "묶음 풀기 → 미지정")
+check(db.set_label(p2, [("", key)], "D", "메모D") == 2, "날짜 묶기")
+d2, e2 = db.load(p2)
+r = e2[e2["이벤트명"] == "D"].iloc[0]
+check(r["시작일"] == date(2026, 4, 16) and r["메모"] == "메모D" and r["모델"] == "WINE", "기간·모델은 데이터에서 자동")
+db.rename_event(p2, "D", "D2", "새 메모")
+check(set(db.load(p2)[0][db.LABEL]) == {"D2"}, "이름 바꾸면 행도 같이")
+check(db.delete_rows(p2, [("D2", key)]) == 2 and len(db.load(p2)[0]) == 0, "날짜 행 삭제")
+check(p2.with_name(p2.stem + ".backup.xlsx").exists(), "삭제 전 백업 파일")
+# 공용 위치 합치기
+import os
+home = TMP / "home"
+os.environ["HOME"] = str(home)
+legacy = TMP / "exe_dir" / db.DB_NAME
+legacy.parent.mkdir(parents=True, exist_ok=True)
+legacy.unlink(missing_ok=True)
+db.append_rows(legacy, rows.assign(출처="Tool A v1.5"))
+shared = db.default_db_path()
+shared.unlink(missing_ok=True)
+merged = []
+path, msg = db.adopt_shared_db(str(legacy), legacy, merged)
+check(Path(path) == shared and len(db.load(shared)[0]) == 2 and legacy.exists(), "exe 옆 옛 DB → 문서\\BU_Tools로 합침(원본 유지)")
+path, msg2 = db.adopt_shared_db(path, legacy, merged)
+check(msg2 == "" and len(db.load(shared)[0]) == 2, "두 번째 실행은 다시 합치지 않음")
+custom = str(TMP / "my.xlsx")
+check(db.adopt_shared_db(custom, legacy, merged)[0] == custom, "직접 고른 DB 경로는 그대로")
 print(f"전체 {ok}건 통과")

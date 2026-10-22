@@ -16,7 +16,8 @@ _missing_files = [m + ".py" for m in ('capability', 'charts', 'history_db') if n
 if _missing_files:
     raise SystemExit("[빌드 중단] common 폴더에 공용 모듈이 없습니다: " + ", ".join(_missing_files)
                      + "\n  압축을 푼 tovis-bu-tools 폴더 구조(OneClick·Trend·common)를 그대로 두세요.")
-_missing_pkgs = [m for m in ("pandas", "openpyxl", "numpy", "matplotlib") if importlib.util.find_spec(m) is None]
+_missing_pkgs = [m for m in ("pandas", "openpyxl", "numpy", "matplotlib", "tkinterdnd2")   # v0.2: 파일 끌어다 놓기
+                 if importlib.util.find_spec(m) is None]
 if _missing_pkgs:
     raise SystemExit("[빌드 중단] 이 파이썬에 설치되지 않은 패키지: " + ", ".join(_missing_pkgs)
                      + "\n  설치: python -m pip install " + " ".join(_missing_pkgs)
@@ -39,6 +40,13 @@ for dll_name in ("tcl86t.dll", "tk86t.dll"):
 
 datas = []
 datas.extend(collect_data_files("tkinter"))
+# tkdnd 라이브러리: 빌드하는 PC 것만 (예: win-x64). PyInstaller 기본 hook이 없을 때를 대비해 직접 넣음
+import platform as _pf
+import sys as _sys
+_os = "win" if _sys.platform.startswith("win") else ("osx" if _sys.platform == "darwin" else "linux")
+_arch = {"amd64": "x64", "x86_64": "x64", "arm64": "arm64", "aarch64": "arm64", "x86": "x86", "i386": "x86",
+         "i686": "x86"}.get(_pf.machine().lower(), "x64")
+datas.extend(d for d in collect_data_files("tkinterdnd2") if Path(d[1]).name in (f"{_os}-{_arch}", "tkdnd"))
 
 for source, target in (
     (tcl_root / "tcl8.6", "_tcl_data"),
@@ -48,13 +56,13 @@ for source, target in (
         datas.append((str(source), target))
 
 a = Analysis(
-    ["BU_trend_report_v01.py"],
+    ["BU_trend_report.py"],
     pathex=[str(project_dir), str(common_dir)],
     binaries=binaries,
     datas=datas,
     hiddenimports=["tkinter", "_tkinter", "pandas", "openpyxl", "numpy",
                    "matplotlib", "matplotlib.backends.backend_agg",
-                   "capability", "charts", "history_db", "trend_report"],
+                   "capability", "charts", "history_db", "trend_report", "tkinterdnd2", "PIL.Image", "PIL.ImageDraw"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -71,7 +79,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="BU_TREND_리포트_v0.1",
+    name="BU_TREND_리포트_v0.2",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

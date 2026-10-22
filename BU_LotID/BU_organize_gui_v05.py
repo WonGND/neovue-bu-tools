@@ -21,12 +21,12 @@ def get_pipeline():
     from BU_organize_one_click_v05 import PipelineCancelled, run_pipeline
     return PipelineCancelled, run_pipeline
 
-APP_TITLE = "TOVIS_BU_DATA_정리_v0.5"
+APP_TITLE = "TOVIS_BU_DATA_정리_v0.6"
 AUTHOR_NAME = "(made by Kwakwonyong)"
 APP_NAME = f"{APP_TITLE} {AUTHOR_NAME}"
 ICON_FILENAME = "tovis_bu_data.ico"
 SETTINGS_FILENAME = "tovis_bu_data_settings_v05.json"
-LOG_FILENAME = "TOVIS_BU_DATA_정리_v0.5_log.txt"
+LOG_FILENAME = "TOVIS_BU_DATA_정리_v0.6_log.txt"
 
 THEMES = {
     "light": {
@@ -125,6 +125,7 @@ class BUOrganizeApp:
         self.remember_paths_var = tk.BooleanVar(value=bool(self.settings.get("remember_paths", True)))
         self.default_threshold_var = tk.StringVar(value=str(self.settings.get("default_threshold", 12)))
         self.default_padding_var = tk.StringVar(value=str(self.settings.get("default_padding", 20)))
+        self.make_cap_var = tk.BooleanVar(value=bool(self.settings.get("make_capability", True)))
 
         self.image_root_var = tk.StringVar(value=self.settings.get("image_root", ""))
         self.data_root_var = tk.StringVar(value=self.settings.get("data_root", ""))
@@ -186,6 +187,7 @@ class BUOrganizeApp:
             "remember_paths": True,
             "default_threshold": 12,
             "default_padding": 20,
+            "make_capability": True,
             "image_root": "",
             "data_root": "",
         }
@@ -208,6 +210,7 @@ class BUOrganizeApp:
                 "remember_paths": self.remember_paths_var.get(),
                 "default_threshold": self._safe_int(self.default_threshold_var.get(), 12),
                 "default_padding": self._safe_int(self.default_padding_var.get(), 20),
+                "make_capability": bool(self.make_cap_var.get()),
             }
         )
         if self.remember_paths_var.get():
@@ -447,6 +450,8 @@ class BUOrganizeApp:
         ttk.Label(analysis, text="크롭 패딩 기본값", style="CardCaption.TLabel", width=LBL_W).grid(row=1, column=0, sticky="w", pady=(10, 0))
         ttk.Entry(analysis, textvariable=self.default_padding_var, width=21).grid(row=1, column=1, sticky="w", padx=(12, 0), pady=(10, 0))
         ttk.Button(analysis, text="현재 입력값 반영", command=self._apply_defaults_to_inputs).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        ttk.Checkbutton(analysis, text="공정능력(Cp/Cpk) 시트 생성 — 측정 CSV 전체 기준 + 이미지 정리본 표시",
+                        variable=self.make_cap_var, command=self._on_settings_changed).grid(row=3, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
         paths = self._make_card(self.settings_view, "바로가기", 2)
         btn_row = ttk.Frame(paths)
@@ -712,6 +717,7 @@ class BUOrganizeApp:
             widget.delete("1.0", "end")
             widget.configure(state="disabled")
 
+        self._make_capability = bool(self.make_cap_var.get())   # 작업 스레드에서 Tk 변수를 읽지 않도록 미리 저장
         self.worker = threading.Thread(
             target=self._run_worker,
             args=(image_root, data_root, threshold, padding),
@@ -737,6 +743,7 @@ class BUOrganizeApp:
                     threshold,
                     padding,
                     cancel_check=self.cancel_requested.is_set,
+                    make_capability=self._make_capability,
                 )
                 print(f"실행 완료: {result.get('excel_path', 'N/A')}")
                 print("=" * 70)

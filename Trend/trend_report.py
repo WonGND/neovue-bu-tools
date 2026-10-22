@@ -27,7 +27,7 @@ import charts as CHARTS  # noqa: E402
 import history_db as db  # noqa: E402
 from capability import SPECS, capability, grade, is_constant  # noqa: E402
 
-VERSION = "v0.1"
+VERSION = "v0.2"
 FONT = "맑은 고딕"
 DEFAULT_SETTINGS = {
     "bu_sigma_increase_pct": 20.0,      # 직전 이벤트 대비 BU σ 증가 경고(%)
@@ -56,10 +56,25 @@ def date_from_filename(path) -> date | None:
     return None
 
 
+class NotDailyFile(ValueError):
+    """Tool A 'Daily data 통합정리' 양식이 아닌 파일"""
+
+
+def is_daily_sheet(ws) -> bool:
+    """양식 표시: B19 'CPK' 머리글 + P2·P3 모델 칸 ('• Cut. Model :', '• Model :')"""
+    def txt(cell):
+        v = ws[cell].value
+        return "" if v is None else str(v).strip()
+    return txt("B19").upper() == "CPK" and "MODEL" in txt("P2").upper() and "MODEL" in txt("P3").upper()
+
+
 def parse_daily_file(path) -> dict:
     """Tool A 'Daily data 통합정리' 결과 파일 → {'rows': DataFrame, 'model': .., 'code': .., 'date': ..}"""
     wb = load_workbook(path, read_only=True, data_only=True)
     ws = wb.worksheets[0]
+    if not is_daily_sheet(ws):                 # CA410/LMK6 cleaned 등 다른 엑셀은 읽지 않음
+        wb.close()
+        raise NotDailyFile(Path(path).name)
     cut = ws["R2"].value or ""
     code = ws["R3"].value or ""
     recs = []
@@ -90,7 +105,7 @@ def rows_for_db(parsed: dict, meas_date: date, path, manual_event: str = "") -> 
     df["판정"] = np.where((df["WU"] < SPECS["WU"][0]) | ((df["BU"] < SPECS["BU"][0]) & (not parsed["ld"])), "NG", "OK")
     df["LD"] = "Y" if parsed["ld"] else ""
     df["이벤트(수동)"] = manual_event or ""
-    df["출처"] = "Tool C 업로드(과거 파일)"
+    df["출처"] = db.UPLOAD_SOURCE
     df["원본파일"] = Path(path).name
     df["Tool"] = f"BU_TREND {VERSION}"
     df["EEPROM_59"] = df["EEPROM_59"].astype(str)
@@ -144,11 +159,13 @@ def _event_stats(name, g, ev_row):
     cw = capability(g["WU"], "WU")
     cb = capability(g["BU"], "BU", ld=ld)
     ng = ((g["WU"] < SPECS["WU"][0]) | ((g["BU"] < SPECS["BU"][0]) & (not ld))).mean() * 100
+    d = pd.to_datetime(g["측정일"], errors="coerce").dropna()
     period = ""
-    if ev_row is not None:
-        period = f"{ev_row['시작일']} ~ {ev_row['종료일']}"
+    if len(d):
+        a, b = d.min().date(), d.max().date()
+        period = str(a) if a == b else f"{a} ~ {b}"
     return {"name": name, "g": g, "ld": ld, "cw": cw, "cb": cb, "ng": ng, "period": period,
-            "model": (ev_row["모델"] if ev_row is not None and ev_row["모델"] else ", ".join(sorted(set(g["모델명"].dropna().astype(str))))),
+            "model": ", ".join(sorted(set(g["모델명"].dropna().astype(str)) - {""})) or (ev_row["모델"] if ev_row is not None else ""),
             "memo": ev_row["메모"] if ev_row is not None else "",
             "lv": g["White_LV"].mean(), "lv_sd": g["White_LV"].std(), "cr": g["CR"].mean(), "cr_sd": g["CR"].std(),
             "wx": g["White_x"].mean(), "wy": g["White_y"].mean()}
@@ -160,12 +177,15 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
     data, events = db.load(db_path)
     if data.empty:
         raise ValueError("누적 DB에 데이터가 없습니다.")
+    data, events, _ = db.migrate_period_events(data, events)      # v0.1 기간 이벤트도 같은 방식으로
     data = db.assign_events(data, events)
-    ev_order = (events.sort_values("시작일")["이벤트명"].astype(str).tolist())
+    first = (data[data["이벤트"] != ""].assign(_d=pd.to_datetime(data["측정일"], errors="coerce"))
+             .groupby("이벤트")["_d"].min().sort_values())
+    ev_order = [str(e) for e in first.index]
     selected = [e for e in ev_order if e in selected_events] + [e for e in selected_events if e not in ev_order]
     data = data[data["이벤트"].isin(selected)].copy()
     if data.empty:
-        raise ValueError("선택한 이벤트에 해당하는 데이터가 없습니다. 이벤트 기간을 확인하세요.")
+        raise ValueError("선택한 이벤트에 해당하는 데이터가 없습니다. 날짜를 이벤트로 묶었는지 확인하세요.")
     for c in ("WU", "BU", "White_LV", "Black_LV", "CR", "White_x", "White_y"):
         data[c] = pd.to_numeric(data[c], errors="coerce")
     # 같은 이벤트 안 동일 LotID는 최신 측정 1건

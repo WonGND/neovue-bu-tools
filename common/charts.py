@@ -20,6 +20,7 @@ plt.rcParams.update({
     "axes.spines.top": False, "axes.spines.right": False,
 })
 INK, GREY, BLUE, RED, AMBER, SLATE = "#111827", "#9ca3af", "#2563eb", "#dc2626", "#d97706", "#475569"
+ORANGE = "#f59e0b"
 
 
 def _png(fig) -> bytes:
@@ -57,14 +58,18 @@ def hist_with_spec(x, name, lsl, usl, cap, width=5.6, height=3.0) -> bytes:
     return _png(fig)
 
 
-def ichart(values, name, lsl, group_labels=None, width=11.4, height=2.4) -> bytes:
-    """측정 순서 개별값 + 평균 + LSL. group_labels: 각 점의 그룹(측정일) — 구분선과 라벨 표시."""
+def ichart(values, name, lsl, group_labels=None, width=11.4, height=2.4, highlight=None, highlight_label="") -> bytes:
+    """측정 순서 개별값 + 평균 + LSL. group_labels: 각 점의 그룹(측정일) — 구분선과 라벨 표시.
+    highlight: 강조할 점(True/False 목록, 예: 이미지 정리본 LotID) — 주황 점으로 표시"""
     x = np.asarray(values, dtype=float)
     idx = np.arange(len(x))
     fig, ax = plt.subplots(figsize=(width, height))
     ax.plot(idx, x, color=GREY, lw=0.6)
     bad = x < lsl
     ax.scatter(idx[~bad], x[~bad], s=4, color="#64748b")
+    if highlight is not None and len(highlight) == len(x):
+        hl = np.asarray(highlight, dtype=bool)
+        ax.scatter(idx[hl], x[hl], s=12, color=ORANGE, zorder=2, label=highlight_label or f"강조 {int(hl.sum())}ea")
     ax.scatter(idx[bad], x[bad], s=10, color=RED, zorder=3, label=f"LSL 미달 {int(bad.sum())}ea")
     ax.axhline(lsl, color=RED, ls="--", lw=1)
     ax.axhline(x.mean(), color=BLUE, lw=1)
@@ -78,8 +83,38 @@ def ichart(values, name, lsl, group_labels=None, width=11.4, height=2.4) -> byte
             ax.text((s + e - 1) / 2, ax.get_ylim()[1], str(g[s]), ha="center", va="bottom", fontsize=8, color=SLATE)
     ax.set_title(f"{name} 개별값 추이 (측정 순서, 측정일 구분)", loc="left", fontsize=10, fontweight="bold", pad=14)
     ax.set_ylabel(f"{name} (%)")
-    if bad.any():
-        ax.legend(loc="lower right", fontsize=8, frameon=False)
+    if bad.any() or highlight is not None:
+        ax.legend(loc="lower right", fontsize=8, frameon=False, ncol=2)
+    return _png(fig)
+
+
+def hist_overlay(x_all, x_sub, name, lsl, usl, cap_all, cap_sub, width=5.6, height=3.0,
+                 all_label="측정 CSV 전체", sub_label="이미지 정리본") -> bytes:
+    """전체 분포(회색) 위에 일부(주황)를 같은 구간으로 겹쳐 그림 + 전체 정규곡선 + LSL/USL"""
+    x = np.asarray(x_all, dtype=float)
+    x = x[~np.isnan(x)]
+    sx = np.asarray(x_sub, dtype=float)
+    sx = sx[~np.isnan(sx)]
+    fig, ax = plt.subplots(figsize=(width, height))
+    lo = min(x.min(), lsl) - 3
+    bins = np.linspace(lo, usl, 46)
+    ax.hist(x, bins=bins, color="#cbd5e1", edgecolor="white", linewidth=0.4, label=f"{all_label} n={len(x)}")
+    if len(sx):
+        ax.hist(sx, bins=bins, color=ORANGE, edgecolor="white", linewidth=0.4, label=f"{sub_label} n={len(sx)}")
+    if cap_all.sigma_overall and cap_all.sigma_overall > 0:
+        xs = np.linspace(lo, usl, 300)
+        ax.plot(xs, _norm_pdf(xs, cap_all.mean, cap_all.sigma_overall) * len(x) * (bins[1] - bins[0]), color=INK, lw=1)
+    top = ax.get_ylim()[1]
+    for v, lab, ha in ((lsl, f"LSL {lsl:g}", "left"), (usl, f"USL {usl:g}", "right")):
+        ax.axvline(v, color=RED, ls="--", lw=1.2)
+        ax.text(v, top * 0.97, lab, color=RED, ha=ha, va="top", fontsize=8)
+    t = f"{name}  ·  전체 Cp {cap_all.cp:.2f} / Cpk {cap_all.cpk:.2f}"
+    if cap_sub is not None and len(sx) >= 2:
+        t += f"   ·   정리본 Cp {cap_sub.cp:.2f} / Cpk {cap_sub.cpk:.2f}"
+    ax.set_title(t, loc="left", fontsize=9.5, fontweight="bold")
+    ax.set_xlabel(f"{name} (%)")
+    ax.set_ylabel("수량 (ea)")
+    ax.legend(fontsize=7.5, frameon=False, loc="upper left", bbox_to_anchor=(0.0, 0.9))
     return _png(fig)
 
 

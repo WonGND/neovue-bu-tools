@@ -20,7 +20,7 @@ import capability_sheet  # noqa: E402
 import history_db  # noqa: E402
 from capability import is_constant, summary_line  # noqa: E402
 
-VERSION = "v1.5"
+VERSION = "v1.5.1"
 APP_TITLE = f"One Click 데이터 정리 도구 {VERSION}"
 
 # [설정] 시간 포맷 및 기본 양식 경로
@@ -284,15 +284,26 @@ class OneClickApp:
 
         self.setup_ui()
         self.log("프로그램이 시작되었습니다.")
+        for line in self._db_msg.splitlines():
+            self.log(line)
+        self._save_settings()
         self.check_template()
 
     # ---- 설정 저장 (각자 PC)
     def _load_settings(self):
-        s = {"db_path": str(app_base_dir() / DB_DEFAULT_NAME), "make_cpk": True, "append_db": True}
+        s = {"db_path": "", "db_merged": [], "make_cpk": True, "append_db": True}
         try:
             s.update(json.loads(self.settings_path.read_text(encoding="utf-8")))
         except (OSError, ValueError):
             pass
+        # v1.5.1: 누적 DB 기본 위치 = 문서\BU_Tools (트렌드 리포트와 같은 파일). exe 옆 옛 DB는 처음 한 번 합침
+        self._db_msg = ""
+        try:
+            s["db_path"], self._db_msg = history_db.adopt_shared_db(
+                s.get("db_path"), app_base_dir() / DB_DEFAULT_NAME, s.setdefault("db_merged", []))
+        except Exception as exc:
+            s["db_path"] = s.get("db_path") or str(history_db.default_db_path())
+            self._db_msg = f"⚠ 이전 DB를 합치지 못했습니다: {exc}"
         return s
 
     def _save_settings(self):
