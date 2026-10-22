@@ -22,3 +22,10 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# v1.5 / 트렌드 리포트 로컬 파일
+OneClick_settings.json
+BU_TREND_settings.json
+BU_History_DB*.xlsx
+트렌드리포트_*.xlsx
+*.tmp.xlsx
