@@ -4,7 +4,8 @@
 엑셀 화면 모양과 Windows exe 동작은 회사 PC에서 아래 순서로 확인한다.
 
 ## 0. 준비
-- `pip install matplotlib` (v1.5에서 새로 필요) → 각 폴더에서 spec으로 빌드 (README 참고)
+- `python -m pip install matplotlib` (v1.5에서 새로 필요) → 각 폴더에서 `python -m PyInstaller --noconfirm <spec>`으로 빌드 (README 참고)
+- 빌드 성공 확인: 마지막 줄 `Build complete!` → exe는 명령을 실행한 폴더의 `dist`에 생김
 - Tool A·트렌드 리포트 exe를 같은 폴더에 둔다 → 누적 DB를 같이 씀
 
 ## 1. Tool A v1.5 (실데이터 1일치)

@@ -33,13 +33,19 @@ BU/WU 이미지 파일을 LotID 단위로 묶어 Excel로 정리하는 Tkinter G
 
 ## 빌드
 
-각 도구 폴더에서 실행 (공용 모듈은 spec이 `../common`에서 함께 묶음):
+각 도구 폴더에서 실행 (공용 모듈은 spec이 `../common`에서 함께 묶음).
+`python -m PyInstaller`로 실행하면 패키지를 설치한 그 파이썬으로 빌드됩니다.
 
 ```powershell
-cd OneClick;  pyinstaller OneClick_정리_v1.5.spec
-cd ..\Trend;  pyinstaller BU_TREND_리포트_v0.1.spec
-cd ..\BU_LotID; pyinstaller TOVIS_BU_DATA_정리_v0.5.spec
+cd OneClick;  python -m PyInstaller --noconfirm OneClick_정리_v1.5.spec
+cd ..\Trend;  python -m PyInstaller --noconfirm BU_TREND_리포트_v0.1.spec
+cd ..\BU_LotID; python -m PyInstaller --noconfirm TOVIS_BU_DATA_정리_v0.5.spec
 ```
+
+- 성공하면 마지막 줄에 `Build complete! The results are available in: <경로>`가 나오고, exe는 그 경로(명령을 실행한 폴더의 `dist`)에 생깁니다.
+- `build`·`dist`가 비어 있으면 빌드가 중간에 멈춘 것입니다. 창에 나온 `[빌드 중단]` 또는 `ERROR`/`Traceback` 줄이 원인입니다.
+- v1.5·트렌드 spec은 빌드 전에 공용 모듈(`common/`)과 필요한 패키지(pandas·openpyxl·numpy·matplotlib)를 점검하고, 빠진 것이 있으면 설치 명령과 함께 멈춥니다.
+- `Build complete!`까지 나왔는데 `dist`가 비어 있으면 백신(V3 등)이 exe를 검역한 경우입니다.
 
 Tool A와 트렌드 리포트 exe를 **같은 폴더**에 두면 누적 DB(`BU_History_DB.xlsx`)를 자동으로 같이 씁니다.
 

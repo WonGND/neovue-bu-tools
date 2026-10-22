@@ -5,8 +5,22 @@ import _tkinter
 import sysconfig
 from PyInstaller.utils.hooks import collect_data_files
 
-project_dir = Path.cwd()
+import importlib.util
+
+# 실행 위치(현재 폴더)와 상관없이 spec 파일이 있는 폴더를 기준으로 경로를 잡는다
+project_dir = Path(SPECPATH).resolve()
 common_dir = project_dir.parent / "common"   # v1.5: 공용 모듈(capability, charts, history_db)
+
+# 빌드 전 점검: 빠진 것이 있으면 exe를 만들지 않고 바로 이유를 알려준다
+_missing_files = [m + ".py" for m in ('capability', 'charts', 'history_db') if not (common_dir / (m + ".py")).exists()]
+if _missing_files:
+    raise SystemExit("[빌드 중단] common 폴더에 공용 모듈이 없습니다: " + ", ".join(_missing_files)
+                     + "\n  압축을 푼 tovis-bu-tools 폴더 구조(OneClick·Trend·common)를 그대로 두세요.")
+_missing_pkgs = [m for m in ("pandas", "openpyxl", "numpy", "matplotlib") if importlib.util.find_spec(m) is None]
+if _missing_pkgs:
+    raise SystemExit("[빌드 중단] 이 파이썬에 설치되지 않은 패키지: " + ", ".join(_missing_pkgs)
+                     + "\n  설치: python -m pip install " + " ".join(_missing_pkgs)
+                     + "\n  빌드: python -m PyInstaller --noconfirm " + Path(SPEC).name)
 python_base = Path(sysconfig.get_config_var("base"))
 runtime_base = Path(_tkinter.__file__).resolve().parents[1]
 tcl_root = python_base / "tcl"
