@@ -78,13 +78,19 @@ cbs = capability([float(r["Black_Uniformity"]) for r in sub], "BU")
 assert abs(table[3][9] - round(cbs.cpk, 2)) < 1e-9, "BU 정리본 Cpk"
 print(f"A_0421 OK — 전체 n={len(latest)} BU Cpk {cb.cpk:.2f} · 정리본 n=100 BU Cpk {cbs.cpk:.2f}")
 
-# 결과 시트가 v0.5와 같은지 (git의 v0.5 코드로 같은 입력 실행)
-v05 = OUT / "v05_code"
-v05.mkdir()
-src = subprocess.run(["git", "-C", str(ROOT), "show", "HEAD:BU_LotID/BU_organize_one_click_v05.py"],
-                     capture_output=True, check=True).stdout
-(v05 / "tb05.py").write_bytes(src)
-r05 = subprocess.run([sys.executable, "-c", f"""
+# 결과 시트가 v0.5와 같은지 (git 저장소 안에서만: git의 v0.5 코드로 같은 입력 실행)
+_rel = "BU_LotID/BU_organize_one_click_v05.py"
+_intro = subprocess.run(["git", "-C", str(ROOT), "log", "--format=%H", "-S", "TOOL_VERSION", "--", _rel],
+                        capture_output=True, text=True).stdout.split()        # v0.6 코드가 처음 들어간 커밋
+src = subprocess.run(["git", "-C", str(ROOT), "show", f"{_intro[-1]}^:{_rel}" if _intro else f"HEAD:{_rel}"],
+                     capture_output=True)
+if src.returncode != 0 or b"TOOL_VERSION" in src.stdout:
+    print("v0.5 비교 생략 (git 기록 없음)")
+else:
+    v05 = OUT / "v05_code"
+    v05.mkdir()
+    (v05 / "tb05.py").write_bytes(src.stdout)
+    r05 = subprocess.run([sys.executable, "-c", f"""
 import sys; sys.path.insert(0, r'{v05}')
 from pathlib import Path
 import tb05
@@ -94,14 +100,13 @@ ws = load_workbook(res['excel_path'])['결과']
 import json; print('JSON' + json.dumps([[str(c.value) for c in r] for r in ws.iter_rows()]))
 print('IMGS', len(ws._images))
 """], capture_output=True, text=True, check=True).stdout
-import json  # noqa: E402
-old_rows = json.loads(r05.split("JSON", 1)[1].splitlines()[0])
-old_imgs = int(r05.split("IMGS", 1)[1].split()[0])
-new_rows, new_imgs = result_sheet(x)       # v0.5 실행이 같은 경로에 다시 썼으므로 v0.6 결과를 다시 만듦
-res = tb.run_pipeline(img_root, data_root, 12, 20)
-new_rows, new_imgs = result_sheet(res["excel_path"])
-assert [[str(v) for v in r] for r in new_rows] == old_rows and new_imgs == old_imgs, "결과 시트가 v0.5와 다름"
-print(f"결과 시트 v0.5와 동일 ({len(old_rows)}행, 이미지 {old_imgs}개)")
+    import json  # noqa: E402
+    old_rows = json.loads(r05.split("JSON", 1)[1].splitlines()[0])
+    old_imgs = int(r05.split("IMGS", 1)[1].split()[0])
+    res = tb.run_pipeline(img_root, data_root, 12, 20)     # v0.5 실행이 같은 경로에 다시 썼으므로 v0.6 결과를 다시 만듦
+    new_rows, new_imgs = result_sheet(res["excel_path"])
+    assert [[str(v) for v in r] for r in new_rows] == old_rows and new_imgs == old_imgs, "결과 시트가 v0.5와 다름"
+    print(f"결과 시트 v0.5와 동일 ({len(old_rows)}행, 이미지 {old_imgs}개)")
 
 # 2) 공정능력 시트 끄기
 res = tb.run_pipeline(img_root, data_root, 12, 20, make_capability=False)
