@@ -157,8 +157,7 @@ def _db_rows(df, cut_model, ld, ca_path, lmk_path):
         "판정": df["Judge"].values if "Judge" in df else None,
         "EEPROM_59": df["EEPROM_59"].astype(str).values if "EEPROM_59" in df else None,
     })
-    if rows["White_LV"] is not None and rows["Black_LV"] is not None:
-        rows["CR"] = rows["White_LV"] / rows["Black_LV"]
+    rows["CR"] = pd.to_numeric(rows["White_LV"], errors="coerce") / pd.to_numeric(rows["Black_LV"], errors="coerce")
     rows["모델코드"] = rows["LotID"].map(history_db.model_code)
     rows["생산일"] = rows["LotID"].map(history_db.prod_date)
     rows["LD"] = "Y" if ld else ""
