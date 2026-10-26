@@ -80,7 +80,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="NEOVUE_BU_TREND_리포트_v0.3",
+    name="NEOVUE_BU_TREND_리포트_v0.4",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

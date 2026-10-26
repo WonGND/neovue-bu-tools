@@ -225,7 +225,7 @@ def process(opts: dict, log=print) -> dict:
     if opts.get("make_cpk") and base_df is not None and "White_Uniformity" in base_df.columns:
         log(f"공정능력 계산 중... (LotID별 최신 1건, n = {len(base_df)}){' · LD 모델: BU 제외' if ld else ''}")
         model = " ".join(x for x in (cut_model, code) if x) or history_db.model_code(base_df["Panel_ID"].iloc[0])
-        meta = {"model": model, "version": f"NEOVUE Tool A {VERSION}",
+        meta = {"model": model, "version": f"Tool A {VERSION}",
                 "source": " / ".join(os.path.basename(p) for p in (ca_path, lmk_path) if p)}
         target_wb = wb
         if target_wb is None:

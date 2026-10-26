@@ -1,6 +1,6 @@
 # neovue-bu-tools
 
-NEOVUE BU 설비 데이터 정리·분석 도구 모음. 세 툴 모두 같은 화면 디자인(머리글 · 카드 · 파란 실행 버튼)과 `(made by Kwakwonyong)` 표시.
+NEOVUE BU 설비 데이터 정리·분석 도구 모음. NEOVUE 표시는 창 제목·exe 이름에만 (결과 엑셀에는 넣지 않음). 세 툴 모두 같은 화면 디자인(머리글 · 카드 · 파란 실행 버튼)과 `(made by Kwakwonyong)` 표시.
 
 ## 포함 도구
 
@@ -23,13 +23,14 @@ v0.6부터 `crop_report.xlsx`에 공정능력 시트 추가 (판정 = 그 실행
 - `NEOVUE_BU_DATA_정리_v0.6.1.spec` - PyInstaller spec
 - `neovue_bu_data.ico` - 세 툴 공용 아이콘 (exe·창 아이콘)
 
-### Trend (`Trend/`) — BU 트렌드 리포트 v0.3 (`NEOVUE_BU_TREND_리포트`)
+### Trend (`Trend/`) — BU 트렌드 리포트 v0.4 (`NEOVUE_BU_TREND_리포트`)
 측정일·이벤트 한 표, 통합정리 파일 끌어다 놓기/선택 → 이벤트만 입력, 이벤트별 트렌드 리포트(거시·미시).
 v0.3: 리포트 '엑셀 열기'·'폴더 열기' 버튼, '변화 감지' 시트(읽는 법·경고 기준·의미/확인할 것).
+v0.4: 이벤트 요약 핵심 그림(한눈 보드 · Cpk+NG율) · 결론 메모 칸, 미시 시트 이벤트별 접기, NG 이력 BU/WU 이미지 링크(선택).
 
 - `BU_trend_report.py` - GUI
 - `trend_report.py` - 통합정리 파일 읽기·리포트 생성 로직
-- `NEOVUE_BU_TREND_리포트_v0.3.spec` - PyInstaller spec
+- `NEOVUE_BU_TREND_리포트_v0.4.spec` - PyInstaller spec
 
 ### 공용 모듈 (`common/`)
 `capability.py`(계산) · `capability_sheet.py`(공정능력 시트) · `charts.py`(그림) · `history_db.py`(누적 DB) · `ui_style.py`(공용 화면 스타일 · 아이콘 · 파일 열기)
@@ -52,7 +53,7 @@ python -m pip install pandas openpyxl numpy pillow matplotlib tkinterdnd2 pyinst
 
 ```powershell
 cd OneClick;  python -m PyInstaller --noconfirm NEOVUE_OneClick_정리_v1.5.2.spec
-cd ..\Trend;  python -m PyInstaller --noconfirm NEOVUE_BU_TREND_리포트_v0.3.spec
+cd ..\Trend;  python -m PyInstaller --noconfirm NEOVUE_BU_TREND_리포트_v0.4.spec
 cd ..\BU_LotID; python -m PyInstaller --noconfirm NEOVUE_BU_DATA_정리_v0.6.1.spec
 ```
 

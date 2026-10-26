@@ -16,6 +16,9 @@ import numpy as np
 import pandas as pd
 from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as XLImage
+from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, TwoCellAnchor
+from openpyxl.utils import column_index_from_string, get_column_letter
+from openpyxl.utils.cell import coordinate_from_string
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 _HERE = Path(__file__).resolve().parent
@@ -27,7 +30,7 @@ import charts as CHARTS  # noqa: E402
 import history_db as db  # noqa: E402
 from capability import SPECS, capability, grade, is_constant  # noqa: E402
 
-VERSION = "v0.3"
+VERSION = "v0.4"
 FONT = "맑은 고딕"
 DEFAULT_SETTINGS = {
     "bu_sigma_increase_pct": 20.0,      # 직전 이벤트 대비 BU σ 증가 경고(%)
@@ -107,9 +110,33 @@ def rows_for_db(parsed: dict, meas_date: date, path, manual_event: str = "") -> 
     df["이벤트(수동)"] = manual_event or ""
     df["출처"] = db.UPLOAD_SOURCE
     df["원본파일"] = Path(path).name
-    df["Tool"] = f"NEOVUE BU_TREND {VERSION}"
+    df["Tool"] = f"BU_TREND {VERSION}"
     df["EEPROM_59"] = df["EEPROM_59"].astype(str)
     return df
+
+
+# ------------------------------------------------------------------ NG 이력 이미지 링크 (v0.4)
+def bu_image_index(root, log=print) -> dict:
+    """Tool B 결과(…_cropped_v1/<LotID>/<LotID>_BU_1.png)를 찾아 {Lot ID(정규화): {'BU': 경로, 'WU': 경로}}.
+    같은 Lot ID가 여러 결과 폴더에 있으면 최근 파일. 고른 폴더 자체가 결과 폴더여도 됨."""
+    root = Path(root)
+    if not root.exists():
+        log(f"⚠ BU Image 폴더가 없습니다: {root}")
+        return {}
+    dirs = [root] if "_cropped" in root.name else []
+    dirs += [d for d in root.rglob("*_cropped*") if d.is_dir()]
+    idx, when = {}, {}
+    for d in dirs:
+        for f in d.glob("*/*.png"):
+            m = re.match(r"(.+?)_(BU|WU)_\d+$", f.stem, re.I)
+            if not m:
+                continue
+            key, kind = db.normalize_lot_id(m.group(1)), m.group(2).upper()
+            t = f.stat().st_mtime
+            if t >= when.get((key, kind), -1):
+                when[(key, kind)] = t
+                idx.setdefault(key, {})[kind] = f.resolve()
+    return idx
 
 
 # ------------------------------------------------------------------ 엑셀 도우미
@@ -140,12 +167,43 @@ def _table(ws, r0, c0, header, rows, fills=None, widths=None):
     return r0 + len(rows) + 1
 
 
-def _img(ws, png: bytes, anchor: str, width_px: int) -> int:
+_EMU = 9525
+
+
+def _col_px(ws, idx: int) -> int:
+    w = ws.column_dimensions[get_column_letter(idx)].width
+    return int((w if w else 8.43) * 7 + 5)
+
+
+def _row_px(ws, idx: int) -> int:
+    h = ws.row_dimensions[idx].height
+    return int((h if h else 15) * 96 / 72)
+
+
+def _img(ws, png: bytes, anchor: str, width_px: int, two_cell: bool = False) -> int:
+    """그림 넣기. 반환 = 차지하는 행 수. two_cell=True면 '셀에 맞춰 이동·크기 조절'
+    (행을 접으면 그림도 같이 숨음 — 측정일별 시트의 이벤트 접기용)"""
     img = XLImage(io.BytesIO(png))
     ratio = width_px / img.width
     img.width, img.height = width_px, int(img.height * ratio)
-    ws.add_image(img, anchor)
-    return int(img.height * 0.75 / 15) + 1
+    n_rows = int(img.height * 0.75 / 15) + 1
+    if not two_cell:
+        ws.add_image(img, anchor)
+        return n_rows
+    letter, row = coordinate_from_string(anchor)
+    c0, r0 = column_index_from_string(letter), row
+    c, left = c0, img.width
+    while left > _col_px(ws, c):
+        left -= _col_px(ws, c)
+        c += 1
+    r, top = r0, img.height
+    while top > _row_px(ws, r):
+        top -= _row_px(ws, r)
+        r += 1
+    img.anchor = TwoCellAnchor(editAs="twoCell", _from=AnchorMarker(col=c0 - 1, colOff=0, row=r0 - 1, rowOff=0),
+                               to=AnchorMarker(col=c - 1, colOff=left * _EMU, row=r - 1, rowOff=top * _EMU))
+    ws.add_image(img)
+    return r - r0 + 1
 
 
 def _r(v, nd=2):
@@ -284,7 +342,7 @@ def _change_sheet(wb, flags, st):
 
 
 def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "White 휘도·CR", "White x/y"),
-             settings: dict | None = None, log=print) -> str:
+             settings: dict | None = None, log=print, image_dir=None) -> str:
     st = {**DEFAULT_SETTINGS, **(settings or {})}
     data, events = db.load(db_path)
     if data.empty:
@@ -315,7 +373,18 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
     for col, w in zip("ABCDEFGHIJKLMNOPQRS", (2, 14, 22, 12, 7, 9, 8, 8, 9, 8, 8, 8, 10, 9, 9, 9, 8, 24, 2)):
         ws.column_dimensions[col].width = w
     _title(ws, "B2", "트렌드 리포트 — 이벤트 요약",
-           f"NEOVUE BU_TREND {VERSION} · {datetime.now():%Y-%m-%d %H:%M} · 이벤트 안 동일 LotID는 최신 1건 · Cp/Cpk 같은 기준 색상")
+           f"BU_TREND {VERSION} · {datetime.now():%Y-%m-%d %H:%M} · 대상: {', '.join(labels)} · "
+           "이벤트 안 동일 LotID는 최신 1건 · Cp/Cpk 같은 기준 색상")
+    # v0.4: 핵심 그림 — A 한눈 보드(최신 이벤트 KPI + 이벤트별 신호등) · B Cpk 추이 + NG율
+    flags, n_hit = _change_detection(stats, st)
+    warn = [None] + [sum(1 for f in flags if f[0] == s["name"] and f[6].startswith("⚠")) for s in stats[1:]]
+    board_rows = [{"name": s["name"], "period": s["period"], "n": len(s["g"]), "wu_cpk": s["cw"].cpk,
+                   "bu_cpk": None if s["ld"] else s["cb"].cpk, "ng": s["ng"], "warn": w} for s, w in zip(stats, warn)]
+    h1 = _img(ws, CHARTS.summary_board(board_rows), "B5", 640)
+    h2 = _img(ws, CHARTS.cpk_ng_combo(labels, [s["cw"].cpk for s in stats],
+                                      [None if s["ld"] else s["cb"].cpk for s in stats], [s["ng"] for s in stats],
+                                      warn, "Cpk 추이 + NG율 (WU<80 또는 BU<50)"), "K5", 600)
+    top = 5 + max(h1, h2) + 1
     hdr = ["이벤트", "기간", "모델", "n", "WU 평균", "WU Cp", "WU Cpk", "BU 평균", "BU σ", "BU Cp", "BU Cpk",
            "W 휘도 평균", "CR 평균", "W x", "W y", "NG율", "메모"]
     rows, fills = [], {}
@@ -327,10 +396,10 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
                      _r(s["lv"], 1), _r(s["cr"], 0), _r(s["wx"], 4), _r(s["wy"], 4), f"{s['ng']:.1f}%", s["memo"]])
         for j, v in ((5, cw.cp), (6, cw.cpk)) + (() if s["ld"] else ((9, cb.cp), (10, cb.cpk))):
             fills[(i, j)] = grade(v)[1]
-    r = _table(ws, 5, 2, hdr, rows, fills)
-    ws.auto_filter.ref = f"B5:R{r - 1}"
+    ws.cell(top, 2, "이벤트 요약").font = Font(name=FONT, size=11, bold=True, color="1E3A5F")
+    r = _table(ws, top + 1, 2, hdr, rows, fills)
+    ws.auto_filter.ref = f"B{top + 1}:R{r - 1}"
     r += 1
-    flags, n_hit = _change_detection(stats, st)
     ws.cell(r, 2, "변화 감지").font = Font(name=FONT, size=11, bold=True, color="1E3A5F")
     if flags:
         msg = (f"직전 이벤트 대비 확인 필요 {n_hit}건 → '변화 감지' 시트" if n_hit
@@ -340,6 +409,20 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
     c = ws.cell(r, 4, msg)
     c.font = Font(name=FONT, size=10, bold=bool(n_hit), color="B91C1C" if n_hit else "15803D", underline="single")
     c.hyperlink = "#'변화 감지'!A1"
+    # 결론 메모 칸 (사람이 작성)
+    r += 2
+    ws.cell(r, 2, "결론 메모").font = Font(name=FONT, size=11, bold=True, color="1E3A5F")
+    ws.cell(r, 4, "직접 작성 — 예: 'C는 BU 산포 증가, 자재 Lot 확인 중'").font = Font(name=FONT, size=9, color="9CA3AF")
+    ws.merge_cells(start_row=r + 1, start_column=2, end_row=r + 4, end_column=18)
+    memo = ws.cell(r + 1, 2)
+    memo.alignment = Alignment(vertical="top", wrap_text=True)
+    memo.font = Font(name=FONT, size=10)
+    for rr in range(r + 1, r + 5):
+        for cc in range(2, 19):
+            cell = ws.cell(rr, cc)
+            cell.fill = PatternFill("solid", fgColor="FFFBEB")
+            cell.border = Border(left=_thin if cc == 2 else None, right=_thin if cc == 18 else None,
+                                 top=_thin if rr == r + 1 else None, bottom=_thin if rr == r + 4 else None)
     _change_sheet(wb, flags, st)
 
     # ---- 2. 트렌드(거시)
@@ -382,27 +465,40 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
     ws3.sheet_view.showGridLines = False
     _title(ws3, "B2", "측정일별 비교 — 이벤트 안 (미시)",
            f"일자 평균이 이벤트 평균에서 {st['daily_mean_dev_sigma']}σ 이상 벗어나면 표시 · 당일 컨디션 편차 확인용")
-    row = 5
-    for s in stats:
+    # v0.4: 맨 위 바로가기 + 이벤트마다 행 그룹(왼쪽 ＋/－ 로 접기, 그림도 같이 접힘)
+    ws3.sheet_properties.outlinePr.summaryBelow = False
+    ws3.cell(4, 2, "바로가기").font = Font(name=FONT, size=10, bold=True, color="1E3A5F")
+    ws3.cell(4, 4, "이벤트를 접으려면 왼쪽 여백의 － 를 누르세요 (모두 접기: 위쪽 1, 모두 펼치기: 2)").font = \
+        Font(name=FONT, size=9, color="6B7280")
+    toc_cells = []
+    for i, s in enumerate(stats):
+        cc = ws3.cell(5, 2 + i * 3, s["name"])
+        cc.font = Font(name=FONT, size=10, color="2563EB", underline="single")
+        toc_cells.append(cc)
+    row = 7
+    for s, toc in zip(stats, toc_cells):
         g = s["g"].copy()
         g["d"] = pd.to_datetime(g["측정일"]).dt.strftime("%m-%d")
         ws3.cell(row, 2, f"■ {s['name']}  ({s['period']})" + (f"  메모: {s['memo']}" if s["memo"] else "")).font = \
             Font(name=FONT, size=11, bold=True, color="1E3A5F")
-        row += 1
+        toc.hyperlink = f"#'측정일별(미시)'!B{row}"
+        head_row = row
+        row += 2
         days = sorted(g["d"].unique())
+        hs = []
         if not s["ld"]:
-            _img(ws3, CHARTS.boxplot_groups({d: g.loc[g.d == d, "BU"].dropna() for d in days}, "BU", SPECS["BU"][0],
-                                            "BU 측정일별", width=5.0, highlight_last=False), f"B{row}", 430)
-        _img(ws3, CHARTS.boxplot_groups({d: g.loc[g.d == d, "WU"].dropna() for d in days}, "WU", SPECS["WU"][0],
-                                        "WU 측정일별", width=5.0, highlight_last=False), f"I{row}", 430)
+            hs.append(_img(ws3, CHARTS.boxplot_groups({d: g.loc[g.d == d, "BU"].dropna() for d in days}, "BU", SPECS["BU"][0],
+                                                      "BU 측정일별", width=5.0, highlight_last=False), f"B{row}", 430, True))
+        hs.append(_img(ws3, CHARTS.boxplot_groups({d: g.loc[g.d == d, "WU"].dropna() for d in days}, "WU", SPECS["WU"][0],
+                                                  "WU 측정일별", width=5.0, highlight_last=False), f"I{row}", 430, True))
         daily = []
         for d in days:
             gd = g[g.d == d].sort_values("측정일시")
             daily.append((d, len(gd), capability(gd["WU"], "WU"), capability(gd["BU"], "BU", ld=s["ld"])))
         _img(ws3, CHARTS.daily_cpk_line(days, [x[2].cpk for x in daily], [np.nan if s["ld"] else x[3].cpk for x in daily],
                                         s["memo"], "측정일별 Cp · Cpk", wu_cp=[x[2].cp for x in daily],
-                                        bu_cp=None if s["ld"] else [x[3].cp for x in daily]), f"P{row}", 460)
-        row += 18
+                                        bu_cp=None if s["ld"] else [x[3].cp for x in daily]), f"P{row}", 460, True)
+        row += max(hs + [18])
         k = st["daily_mean_dev_sigma"]
         trows, tf = [], {}
         for i, (d, n, cw, cb) in enumerate(daily):
@@ -415,19 +511,33 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
                 tf[(i, j)] = grade(v)[1]
             if dev_w or dev_b:
                 tf[(i, 8)] = "FEF3C7"
-        row = _table(ws3, row, 2, ["측정일", "n", "WU 평균", "WU Cp", "WU Cpk", "BU 평균", "BU Cp", "BU Cpk", "판정"], trows, tf) + 2
+        row = _table(ws3, row, 2, ["측정일", "n", "WU 평균", "WU Cp", "WU Cpk", "BU 평균", "BU Cp", "BU Cpk", "판정"], trows, tf) + 1
+        ws3.row_dimensions.group(head_row + 1, row - 1, outline_level=1, hidden=False)
+        row += 1
 
     # ---- 4. NG 이력
     ws4 = wb.create_sheet("NG 이력")
     ng_mask = (data["WU"] < SPECS["WU"][0]) | ((data["BU"] < SPECS["BU"][0]) & (data["LD"].astype(str) != "Y")) | \
               (data["판정"].astype(str).str.upper() == "NG")
     ng = data[ng_mask][["이벤트", "측정일", "LotID", "WU", "BU", "판정", "원본파일"]].sort_values(["이벤트", "측정일"])
-    ws4.append(list(ng.columns))
+    # v0.4: Tool B 결과 폴더를 지정하면 Lot ID가 같은 BU/WU 이미지로 바로가기 (그림을 넣지 않고 경로만 → 용량 영향 없음)
+    idx = bu_image_index(image_dir, log) if image_dir else {}
+    ws4.append(list(ng.columns) + ["BU Image", "WU Image"])
+    n_link = 0
     for rec in ng.itertuples(index=False):
         ws4.append([str(v) if isinstance(v, date) else v for v in rec])
-    ws4.auto_filter.ref = f"A1:G{len(ng) + 1}"
-    for col, w in zip("ABCDEFG", (14, 12, 48, 9, 9, 8, 46)):
+        hit = idx.get(db.normalize_lot_id(rec.LotID), {})
+        for col, kind in ((8, "BU"), (9, "WU")):
+            if kind in hit:
+                c = ws4.cell(ws4.max_row, col, "열기")
+                c.hyperlink = str(hit[kind])
+                c.font = Font(color="2563EB", underline="single")
+                n_link += 1
+    ws4.auto_filter.ref = f"A1:I{len(ng) + 1}"
+    for col, w in zip("ABCDEFGHI", (14, 12, 48, 9, 9, 8, 46, 10, 10)):
         ws4.column_dimensions[col].width = w
+    if image_dir:
+        log(f"NG 이력 이미지 링크: {n_link}개 (이미지 {len(idx)}개 Lot ID 중)")
 
     # ---- 5. Raw
     ws5 = wb.create_sheet("Raw")

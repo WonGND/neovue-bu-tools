@@ -1,5 +1,5 @@
-"""트렌드 리포트 v0.3 로직 시험 (화면 없이)
-사용: python run_tool_c.py <Tool A 시험 출력 폴더(DB 포함)> <리포트 출력 폴더>
+"""트렌드 리포트 v0.4 로직 시험 (화면 없이)
+사용: python run_tool_c.py <Tool A 시험 출력 폴더(DB 포함)> <리포트 출력 폴더> [Tool B 시험 출력 폴더]
 1) 과거 파일(B, C) 추가 + 이벤트 지정 → 다시 추가해도 0건
 2) Tool A가 이미 쌓은 날짜의 통합정리 파일을 추가하며 이벤트 지정 → 새로 넣지 않고 미지정 행만 묶음
 3) 남은 미지정 날짜를 이벤트로 묶기 (G10은 LD 모델)
@@ -76,10 +76,11 @@ out = tr.generate(DB, ["이벤트 A", "이벤트 B", "이벤트 C", "G10 확인"
 wb = load_workbook(out)
 print("시트:", wb.sheetnames)
 ws = wb["이벤트 요약"]
-for r in range(6, 10):
+h = next(r for r in range(1, 80) if ws.cell(r, 2).value == "이벤트" and ws.cell(r, 3).value == "기간")   # v0.4: 그림 아래로 내려감
+for r in range(h + 1, h + 5):
     print([ws.cell(r, c).value for c in range(2, 13)])
-assert ws.cell(6, 3).value == "2026-04-16 ~ 2026-04-21", "기간은 데이터에서 자동 계산"
-assert ws.cell(9, 2).value == "G10 확인" and ws.cell(9, 12).value == "N/A (LD)", "G10은 LD로 BU 제외"
+assert ws.cell(h + 1, 3).value == "2026-04-16 ~ 2026-04-21", "기간은 데이터에서 자동 계산"
+assert ws.cell(h + 4, 2).value == "G10 확인" and ws.cell(h + 4, 12).value == "N/A (LD)", "G10은 LD로 BU 제외"
 # 5) v0.3 변화 감지 시트
 assert wb.sheetnames[:2] == ["이벤트 요약", "변화 감지"], wb.sheetnames
 wc = wb["변화 감지"]
@@ -89,8 +90,29 @@ rows = [[wc.cell(r, c).value for c in range(2, 10)] for r in range(11, 40) if wc
 hits = [r for r in rows if str(r[6]).startswith("⚠")]
 assert hits and all(r[7] for r in hits), "⚠ 행에는 의미·확인할 것이 있어야 함"
 assert all(r[1] for r in rows[:len(hits)]), "비교 대상(직전 이벤트) 표시"
-link = [ws.cell(r, 4) for r in range(10, 20) if ws.cell(r, 4).hyperlink]
+link = [ws.cell(r, 4) for r in range(h, h + 15) if ws.cell(r, 4).hyperlink]
 assert link and "확인 필요" in link[0].value and str(len(hits)) in link[0].value, "요약 시트에 건수 + 바로가기"
 print(f"변화 감지 시트 OK — 확인 필요 {len(hits)}건 / {len(rows)}행 · 요약: {link[0].value}")
+# 6) v0.4 배치: 요약 핵심 그림 2개 + 결론 메모 칸 · 미시 이벤트 접기 · NG 이력 이미지 링크
+assert len(ws._images) == 2, "요약 시트 핵심 그림 A·B"
+assert any("결론 메모" == ws.cell(r, 2).value for r in range(1, 60)), "결론 메모 칸"
+wm = wb["측정일별(미시)"]
+levels = [r for r, d in wm.row_dimensions.items() if d.outlineLevel == 1]
+assert levels and all(type(im.anchor).__name__ == "TwoCellAnchor" for im in wm._images), "행 그룹 + 그림이 행과 같이 접힘"
+links = [c for c in wm[5] if c.hyperlink]
+assert len(links) == 4, "미시 바로가기 4개"
+B_OUT = Path(sys.argv[3]) if len(sys.argv) > 3 else None
+if B_OUT:
+    out2 = tr.generate(DB, ["이벤트 A", "이벤트 B", "이벤트 C", "G10 확인"], OUT / "트렌드리포트_링크.xlsx", log=print,
+                       image_dir=B_OUT)
+    wn = load_workbook(out2)["NG 이력"]
+    assert [wn.cell(1, c).value for c in (8, 9)] == ["BU Image", "WU Image"]
+    linked = [r for r in range(2, wn.max_row + 1) if wn.cell(r, 8).hyperlink]
+    assert linked, "Tool B 결과에 있는 Lot ID는 링크"
+    tgt = Path(wn.cell(linked[0], 8).hyperlink.target)
+    assert tgt.exists() and tgt.name.startswith(str(wn.cell(linked[0], 3).value)[:10]), tgt
+    s1, s2 = (OUT / "트렌드리포트_test.xlsx").stat().st_size, Path(out2).stat().st_size
+    print(f"NG 이미지 링크 {len(linked)}행 · 파일 크기 {s1/1024:.0f}KB → {s2/1024:.0f}KB")
+    assert s2 - s1 < 50 * 1024, "링크만 넣으므로 크기 차이 작음"
 tr.generate(DB, ["이벤트 A", "이벤트 B", "이벤트 C"], OUT / "트렌드리포트_WINE.xlsx", log=print)
-print("트렌드 리포트 v0.3 시험 통과")
+print("트렌드 리포트 v0.4 시험 통과")

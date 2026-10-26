@@ -248,3 +248,114 @@ def daily_cpk_line(dates, wu_cpk, bu_cpk, memo=None, title="측정일별 Cp · C
         ax.text(0.01, 0.02, f"메모: {memo}", transform=ax.transAxes, fontsize=8, color=AMBER)
     ax.set_title(title, loc="left", fontsize=10, fontweight="bold")
     return _png(fig)
+
+
+# ------------------------------------------------------------------ 이벤트 요약 핵심 그림 (트렌드 v0.4)
+_GRADE_FILL = ((1.67, "양호", "#D1FAE5"), (1.33, "적합", "#DBEAFE"), (1.00, "주의", "#FEF3C7"), (-math.inf, "부적합", "#FEE2E2"))
+
+
+def _grade(v):
+    if v is None or not np.isfinite(v):
+        return "N/A", "#E5E7EB"
+    for th, name, fill in _GRADE_FILL:
+        if v >= th:
+            return name, fill
+    return "부적합", "#FEE2E2"
+
+
+def summary_board(rows: list[dict], ng_warn=5.0, width=7.2, height=4.4) -> bytes:
+    """한눈 보드: 위 = 최신 이벤트 KPI 4칸(직전 대비 ▲▼), 아래 = 이벤트별 신호등 표.
+    rows: [{name, period, n, wu_cpk, bu_cpk(None=LD), ng, warn(None=비교 없음)}] (시간 순)"""
+    from matplotlib.patches import FancyBboxPatch, Rectangle
+    cur = rows[-1]
+    prev = rows[-2] if len(rows) > 1 else None
+    n_rows = len(rows)
+    tbl_h = 0.42 * (n_rows + 1)
+    H = 2.6 + tbl_h
+    fig, ax = plt.subplots(figsize=(width, max(2.8, height * H / 6.2)))
+    ax.set_xlim(0, 10)
+    ax.set_ylim(0, H)
+    ax.axis("off")
+    head = f"최신 이벤트: {cur['name']}" + (f" ({cur['period']})" if cur.get("period") else "")
+    head += f" · 직전 {prev['name']} 대비" if prev else ""
+    ax.text(0.1, H - 0.05, head, fontsize=9.5, color=SLATE, va="top")
+
+    def delta(key, fmt, unit=""):
+        if not prev or cur.get(key) is None or prev.get(key) is None:
+            return ""
+        d = cur[key] - prev[key]
+        return ("▲" if d > 0 else "▼" if d < 0 else "＝") + format(abs(d), fmt) + unit
+
+    def cpk_tile(key):
+        v = cur.get(key)
+        if v is None or not np.isfinite(v):
+            return ("N/A (LD)", "", SLATE, "#F1F5F9")
+        g, fill = _grade(v)
+        col = {"양호": "#15803D", "적합": BLUE, "주의": AMBER}.get(g, RED)
+        return (f"{v:.2f}", f"{g} · {delta(key, '.2f')}".rstrip(" ·"), col, fill)
+    ng_bad = cur["ng"] >= ng_warn
+    tiles = [("n", f"{cur['n']:,}", "", INK, "#F1F5F9"),
+             ("WU Cpk",) + cpk_tile("wu_cpk"), ("BU Cpk",) + cpk_tile("bu_cpk"),
+             ("NG율", f"{cur['ng']:.1f}%", delta("ng", ".1f", "%p"), RED if ng_bad else INK, "#FEE2E2" if ng_bad else "#F1F5F9")]
+    y_t = H - 2.25
+    for i, (k, v, sub, col, bg) in enumerate(tiles):
+        x = 0.1 + i * 2.48
+        ax.add_patch(FancyBboxPatch((x, y_t), 2.3, 1.75, boxstyle="round,pad=0.02,rounding_size=0.15", fc=bg, ec="none"))
+        ax.text(x + 0.15, y_t + 1.55, k, fontsize=9.5, color=SLATE, va="top", fontweight="bold")
+        ax.text(x + 0.15, y_t + 1.0, v, fontsize=20 if len(v) < 7 else 14, color=col, va="center", fontweight="bold")
+        ax.text(x + 0.15, y_t + 0.28, sub, fontsize=9, color=col, va="center")
+    cols = ["이벤트", "n", "WU Cpk", "BU Cpk", "NG율", "변화 감지"]
+    xs = [0.1, 2.3, 3.6, 5.2, 6.8, 8.2]
+    ws = [2.2, 1.3, 1.6, 1.6, 1.4, 1.7]
+    y0 = y_t - 0.25
+    for x, w, c in zip(xs, ws, cols):
+        ax.add_patch(Rectangle((x, y0 - 0.42), w, 0.42, fc="#1E3A5F", ec="white"))
+        ax.text(x + w / 2, y0 - 0.21, c, color="white", fontsize=9, ha="center", va="center", fontweight="bold")
+    for r, row in enumerate(rows):
+        y = y0 - 0.42 * (r + 2)
+        bu = row.get("bu_cpk")
+        bu_txt = "N/A (LD)" if bu is None or not np.isfinite(bu) else f"{bu:.2f}"
+        warn = row.get("warn")
+        vals = [row["name"], f"{row['n']:,}", f"{row['wu_cpk']:.2f}", bu_txt, f"{row['ng']:.1f}%",
+                "—" if warn is None else (f"⚠ {warn}건" if warn else "정상")]
+        fills = ["white", "white", _grade(row["wu_cpk"])[1], _grade(bu)[1], "#FEE2E2" if row["ng"] >= ng_warn else "white",
+                 "#FEE2E2" if warn else "white"]
+        for x, w, v, f in zip(xs, ws, vals, fills):
+            ax.add_patch(Rectangle((x, y), w, 0.42, fc=f, ec="#CBD5E1"))
+            ax.text(x + w / 2, y + 0.21, v, fontsize=8.5, ha="center", va="center", color=INK)
+    return _png(fig)
+
+
+def cpk_ng_combo(labels, wu_cpk, bu_cpk, ng, warn=None, title="Cpk 추이 + NG율", width=6.6, height=4.0) -> bytes:
+    """이벤트별 WU/BU Cpk 막대 + NG율 선(오른쪽 축). warn = 이벤트별 변화 감지 건수(None=비교 없음)"""
+    x = np.arange(len(labels))
+    w = 0.36
+    fig, ax = plt.subplots(figsize=(width, height))
+    bu = [np.nan if v is None else v for v in bu_cpk]
+    ax.bar(x - w / 2, wu_cpk, w, color="#93C5FD", label="WU Cpk")
+    ax.bar(x + w / 2, bu, w, color="#1E3A5F", label="BU Cpk")
+    top = max([v for v in list(wu_cpk) + bu if v is not None and np.isfinite(v)] + [1.5]) * 1.25
+    for th, c, lab in ((1.33, "#15803D", "1.33 적합"), (1.0, AMBER, "1.00 주의")):
+        ax.axhline(th, color=c, ls="--", lw=1)
+        ax.text(len(labels) - 0.45, th + top * 0.01, lab, color=c, fontsize=8)
+    for xi, v in zip(x, bu):
+        if not np.isfinite(v):
+            ax.text(xi + w / 2, top * 0.02, "LD", ha="center", fontsize=8, color=SLATE)
+    ax.set_xticks(x, labels)
+    ax.set_ylabel("Cpk")
+    ax.set_ylim(0, top)
+    ax2 = ax.twinx()
+    ax2.plot(x, ng, color=RED, marker="o", lw=2, label="NG율(%)")
+    ax2.set_ylim(0, max(max(ng) * 1.5, 5))
+    ax2.set_ylabel("NG율 (%)", color=RED)
+    ax2.spines["top"].set_visible(False)
+    for xi, v in zip(x, ng):
+        ax2.text(xi, v + ax2.get_ylim()[1] * 0.03, f"{v:.1f}%", color=RED, ha="center", fontsize=8)
+    for xi, k in zip(x, warn or []):
+        if k:
+            ax.text(xi, top * 0.95, f"⚠ {k}건", ha="center", fontsize=8.5, color=RED, fontweight="bold")
+    h1, l1 = ax.get_legend_handles_labels()
+    h2, l2 = ax2.get_legend_handles_labels()
+    ax.legend(h1 + h2, l1 + l2, loc="upper center", fontsize=8, frameon=False, ncol=3, bbox_to_anchor=(0.5, -0.1))
+    ax.set_title(title, loc="left", fontsize=11, fontweight="bold")
+    return _png(fig)
