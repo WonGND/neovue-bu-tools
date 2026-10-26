@@ -1,9 +1,9 @@
-"""트렌드 리포트 v0.2 로직 시험 (화면 없이)
+"""트렌드 리포트 v0.3 로직 시험 (화면 없이)
 사용: python run_tool_c.py <Tool A 시험 출력 폴더(DB 포함)> <리포트 출력 폴더>
 1) 과거 파일(B, C) 추가 + 이벤트 지정 → 다시 추가해도 0건
 2) Tool A가 이미 쌓은 날짜의 통합정리 파일을 추가하며 이벤트 지정 → 새로 넣지 않고 미지정 행만 묶음
 3) 남은 미지정 날짜를 이벤트로 묶기 (G10은 LD 모델)
-4) 리포트 생성 (기간은 데이터에서 자동)"""
+4) 리포트 생성 (기간은 데이터에서 자동) · 5) v0.3 변화 감지 시트(설명·기준·의미)"""
 import glob
 import sys
 from datetime import date
@@ -80,5 +80,17 @@ for r in range(6, 10):
     print([ws.cell(r, c).value for c in range(2, 13)])
 assert ws.cell(6, 3).value == "2026-04-16 ~ 2026-04-21", "기간은 데이터에서 자동 계산"
 assert ws.cell(9, 2).value == "G10 확인" and ws.cell(9, 12).value == "N/A (LD)", "G10은 LD로 BU 제외"
+# 5) v0.3 변화 감지 시트
+assert wb.sheetnames[:2] == ["이벤트 요약", "변화 감지"], wb.sheetnames
+wc = wb["변화 감지"]
+head = [wc.cell(10, c).value for c in range(2, 10)]
+assert head[-1] == "의미 · 확인할 것" and head[5] == "경고 기준", head
+rows = [[wc.cell(r, c).value for c in range(2, 10)] for r in range(11, 40) if wc.cell(r, 2).value]
+hits = [r for r in rows if str(r[6]).startswith("⚠")]
+assert hits and all(r[7] for r in hits), "⚠ 행에는 의미·확인할 것이 있어야 함"
+assert all(r[1] for r in rows[:len(hits)]), "비교 대상(직전 이벤트) 표시"
+link = [ws.cell(r, 4) for r in range(10, 20) if ws.cell(r, 4).hyperlink]
+assert link and "확인 필요" in link[0].value and str(len(hits)) in link[0].value, "요약 시트에 건수 + 바로가기"
+print(f"변화 감지 시트 OK — 확인 필요 {len(hits)}건 / {len(rows)}행 · 요약: {link[0].value}")
 tr.generate(DB, ["이벤트 A", "이벤트 B", "이벤트 C"], OUT / "트렌드리포트_WINE.xlsx", log=print)
-print("트렌드 리포트 v0.2 시험 통과")
+print("트렌드 리포트 v0.3 시험 통과")

@@ -27,7 +27,7 @@ import charts as CHARTS  # noqa: E402
 import history_db as db  # noqa: E402
 from capability import SPECS, capability, grade, is_constant  # noqa: E402
 
-VERSION = "v0.2"
+VERSION = "v0.3"
 FONT = "맑은 고딕"
 DEFAULT_SETTINGS = {
     "bu_sigma_increase_pct": 20.0,      # 직전 이벤트 대비 BU σ 증가 경고(%)
@@ -107,7 +107,7 @@ def rows_for_db(parsed: dict, meas_date: date, path, manual_event: str = "") -> 
     df["이벤트(수동)"] = manual_event or ""
     df["출처"] = db.UPLOAD_SOURCE
     df["원본파일"] = Path(path).name
-    df["Tool"] = f"BU_TREND {VERSION}"
+    df["Tool"] = f"NEOVUE BU_TREND {VERSION}"
     df["EEPROM_59"] = df["EEPROM_59"].astype(str)
     return df
 
@@ -171,6 +171,118 @@ def _event_stats(name, g, ev_row):
             "wx": g["White_x"].mean(), "wy": g["White_y"].mean()}
 
 
+# ------------------------------------------------------------------ 변화 감지 (v0.3: 설명 보강, 별도 시트)
+CHANGE_MEANING = {
+    "BU σ": "BU 산포(흩어짐)가 커짐 → 자재·공정 편차, 측정 조건(지그·암실·설비 상태) 확인",
+    "BU 평균": "BU 분포 전체가 이동 → 자재 Lot · 공정 조건 변경 여부 확인",
+    "BU Cpk 등급": "규격 하한(50) 대비 여유가 줄어 등급 하락 → σ·평균 중 원인 확인",
+    "WU 평균": "WU 분포 전체가 이동 → 자재 Lot · 공정 조건 변경 여부 확인",
+    "WU Cpk 등급": "규격 하한(80) 대비 여유가 줄어 등급 하락 → 평균·산포 중 원인 확인",
+    "NG율": "규격 미달(WU<80 또는 BU<50) 비율 증가 → 'NG 이력' 시트에서 Lot ID 확인",
+    "전체": "모델이 달라 비교하지 않음 (같은 모델끼리만 비교)",
+}
+
+
+def _criteria(st) -> dict:
+    return {"BU σ": f"+{st['bu_sigma_increase_pct']:.0f}% 이상 증가",
+            "BU 평균": f"±{st['bu_mean_shift']:g} 이상 이동",
+            "BU Cpk 등급": "한 단계 이상 하락",
+            "WU 평균": f"±{st['wu_mean_shift']:g} 이상 이동",
+            "WU Cpk 등급": "한 단계 이상 하락",
+            "NG율": f"+{st['ng_rate_increase']:g}%p 이상 증가",
+            "전체": "—"}
+
+
+def _change_detection(stats, st):
+    """직전 이벤트(시간순 바로 앞)와 비교. 반환: (행 목록, 확인 필요 건수)
+    행: [이벤트, 비교 대상, 항목, 변화, 변화량, 경고 기준, 결과, 의미]"""
+    crit = _criteria(st)
+    flags, n_hit = [], 0
+    order = ["부적합", "주의", "적합", "양호"]
+    for prev, cur in zip(stats, stats[1:]):
+        if str(prev["model"]).strip().upper() != str(cur["model"]).strip().upper():
+            flags.append([cur["name"], prev["name"], "전체", f"{prev['model']} → {cur['model']}", "", crit["전체"],
+                          "비교 생략", CHANGE_MEANING["전체"]])
+            continue
+        checks = []
+        if not (prev["ld"] or cur["ld"]):
+            d_sig = (cur["cb"].sigma_overall / prev["cb"].sigma_overall - 1) * 100
+            checks.append(("BU σ", f"{prev['cb'].sigma_overall:.2f} → {cur['cb'].sigma_overall:.2f}", f"{d_sig:+.0f}%",
+                           d_sig >= st["bu_sigma_increase_pct"]))
+            dm = cur["cb"].mean - prev["cb"].mean
+            checks.append(("BU 평균", f"{prev['cb'].mean:.2f} → {cur['cb'].mean:.2f}", f"{dm:+.2f}",
+                           abs(dm) >= st["bu_mean_shift"]))
+            g0, g1 = grade(prev["cb"].cpk)[0], grade(cur["cb"].cpk)[0]
+            checks.append(("BU Cpk 등급", f"{g0} → {g1}", f"{cur['cb'].cpk - prev['cb'].cpk:+.2f}",
+                           order.index(g1) < order.index(g0)))
+        dm = cur["cw"].mean - prev["cw"].mean
+        checks.append(("WU 평균", f"{prev['cw'].mean:.2f} → {cur['cw'].mean:.2f}", f"{dm:+.2f}",
+                       abs(dm) >= st["wu_mean_shift"]))
+        g0, g1 = grade(prev["cw"].cpk)[0], grade(cur["cw"].cpk)[0]
+        checks.append(("WU Cpk 등급", f"{g0} → {g1}", f"{cur['cw'].cpk - prev['cw'].cpk:+.2f}",
+                       order.index(g1) < order.index(g0)))
+        dng = cur["ng"] - prev["ng"]
+        checks.append(("NG율", f"{prev['ng']:.1f}% → {cur['ng']:.1f}%", f"{dng:+.1f}%p", dng >= st["ng_rate_increase"]))
+        for item, chg, amt, hit in checks:
+            n_hit += bool(hit)
+            flags.append([cur["name"], prev["name"], item, chg, amt, crit[item], "⚠ 확인 필요" if hit else "정상",
+                          CHANGE_MEANING[item] if hit else ""])
+    return flags, n_hit
+
+
+def _change_sheet(wb, flags, st):
+    ws = wb.create_sheet("변화 감지", 1)
+    ws.sheet_view.showGridLines = False
+    for col, w in zip("ABCDEFGHIJ", (2, 13, 13, 13, 19, 10, 17, 13, 64, 2)):
+        ws.column_dimensions[col].width = w
+    _title(ws, "B2", "변화 감지 — 직전 이벤트 대비", "이벤트 요약 시트의 이벤트를 시간 순으로 놓고, 각 이벤트를 바로 앞 이벤트와 비교")
+    guide = [("읽는 법", True),
+             ("① 비교 방법  각 이벤트를 시간 순으로 바로 앞 이벤트와 비교합니다 (같은 모델끼리만, 모델이 다르면 비교 생략).", False),
+             ("② 결과  '⚠ 확인 필요' = 아래 경고 기준을 넘은 변화 → 원인 확인 권장 · '정상' = 기준 이내.  "
+              "※ 불량 판정이 아니라 '달라졌다'는 신호입니다.", False),
+             ("③ 의미 · 확인할 것  ⚠ 행에만 표시 — 무엇이 변했고 어디를 먼저 볼지.", False),
+             ("④ Cpk 등급  양호 ≥ 1.67 · 적합 ≥ 1.33 · 주의 ≥ 1.00 · 부적합 < 1.00 (Cp·Cpk 같은 기준).  "
+              "규격: WU 80~100 · BU 50~100", False)]
+    fill = PatternFill("solid", fgColor="EFF6FF")
+    for i, (txt, bold) in enumerate(guide):
+        r = 4 + i
+        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=9)
+        c = ws.cell(r, 2, txt)
+        c.font = Font(name=FONT, size=10 if not bold else 11, bold=bold, color="1E3A5F" if bold else "374151")
+        c.alignment = Alignment(vertical="center", wrap_text=True, indent=1)
+        for cc in range(2, 10):
+            ws.cell(r, cc).fill = fill
+        ws.row_dimensions[r].height = 20
+    r = 10
+    if flags:
+        ff = {}
+        for i, f in enumerate(flags):
+            if f[6].startswith("⚠"):
+                ff[(i, 6)] = "FEE2E2"
+                ff[(i, 7)] = "FEF2F2"
+            elif f[6] == "비교 생략":
+                ff[(i, 6)] = "E5E7EB"
+        end = _table(ws, r, 2, ["이벤트", "비교 대상\n(직전 이벤트)", "항목", "변화 (직전 → 이번)", "변화량", "경고 기준",
+                               "결과", "의미 · 확인할 것"], flags, ff)
+        for rr in range(r + 1, end):
+            ws.cell(rr, 9).alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        ws.auto_filter.ref = f"B{r}:I{end - 1}"
+        ws.freeze_panes = f"B{r + 1}"
+        r = end + 1
+    else:
+        ws.cell(r, 2, "비교할 이벤트가 2개 이상일 때 표시됩니다.").font = Font(name=FONT, size=9, color="6B7280")
+        r += 2
+    ws.cell(r, 2, "경고 기준 바꾸기").font = Font(name=FONT, size=11, bold=True, color="1E3A5F")
+    rows = [["BU σ 증가", f"{st['bu_sigma_increase_pct']:g} %", "bu_sigma_increase_pct"],
+            ["BU 평균 이동", f"{st['bu_mean_shift']:g}", "bu_mean_shift"],
+            ["WU 평균 이동", f"{st['wu_mean_shift']:g}", "wu_mean_shift"],
+            ["NG율 증가", f"{st['ng_rate_increase']:g} %p", "ng_rate_increase"]]
+    _table(ws, r + 1, 2, ["항목", "현재 기준", "설정 키 (BU_TREND_settings.json → report)"], rows)
+    ws.merge_cells(start_row=r + 1, start_column=4, end_row=r + 1, end_column=5)
+    for rr in range(r + 2, r + 2 + len(rows)):
+        ws.merge_cells(start_row=rr, start_column=4, end_row=rr, end_column=5)
+
+
 def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "White 휘도·CR", "White x/y"),
              settings: dict | None = None, log=print) -> str:
     st = {**DEFAULT_SETTINGS, **(settings or {})}
@@ -203,7 +315,7 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
     for col, w in zip("ABCDEFGHIJKLMNOPQRS", (2, 14, 22, 12, 7, 9, 8, 8, 9, 8, 8, 8, 10, 9, 9, 9, 8, 24, 2)):
         ws.column_dimensions[col].width = w
     _title(ws, "B2", "트렌드 리포트 — 이벤트 요약",
-           f"BU_TREND {VERSION} · {datetime.now():%Y-%m-%d %H:%M} · 이벤트 안 동일 LotID는 최신 1건 · Cp/Cpk 같은 기준 색상")
+           f"NEOVUE BU_TREND {VERSION} · {datetime.now():%Y-%m-%d %H:%M} · 이벤트 안 동일 LotID는 최신 1건 · Cp/Cpk 같은 기준 색상")
     hdr = ["이벤트", "기간", "모델", "n", "WU 평균", "WU Cp", "WU Cpk", "BU 평균", "BU σ", "BU Cp", "BU Cpk",
            "W 휘도 평균", "CR 평균", "W x", "W y", "NG율", "메모"]
     rows, fills = [], {}
@@ -218,39 +330,17 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
     r = _table(ws, 5, 2, hdr, rows, fills)
     ws.auto_filter.ref = f"B5:R{r - 1}"
     r += 1
-    ws.cell(r, 2, "변화 감지 (직전 이벤트 대비 · 기준값은 설정 파일)").font = Font(name=FONT, size=11, bold=True, color="1E3A5F")
-    flags, ff = [], {}
-    order = ["부적합", "주의", "적합", "양호"]
-    for prev, cur in zip(stats, stats[1:]):
-        checks = []
-        if str(prev["model"]).strip().upper() != str(cur["model"]).strip().upper():
-            flags.append([cur["name"], "전체", f"{prev['model']} → {cur['model']}", "", "모델이 달라 비교 생략"])
-            continue
-        if not (prev["ld"] or cur["ld"]):
-            d_sig = (cur["cb"].sigma_overall / prev["cb"].sigma_overall - 1) * 100
-            checks.append(("BU σ", f"{prev['cb'].sigma_overall:.2f} → {cur['cb'].sigma_overall:.2f}", f"{d_sig:+.0f}%",
-                           d_sig >= st["bu_sigma_increase_pct"], f"σ {st['bu_sigma_increase_pct']:.0f}% 이상 증가"))
-            dm = cur["cb"].mean - prev["cb"].mean
-            checks.append(("BU 평균", f"{prev['cb'].mean:.2f} → {cur['cb'].mean:.2f}", f"{dm:+.2f}",
-                           abs(dm) >= st["bu_mean_shift"], "평균 이동"))
-            g0, g1 = grade(prev["cb"].cpk)[0], grade(cur["cb"].cpk)[0]
-            checks.append(("BU Cpk 등급", f"{g0} → {g1}", "", order.index(g1) < order.index(g0), "등급 하락"))
-        dm = cur["cw"].mean - prev["cw"].mean
-        checks.append(("WU 평균", f"{prev['cw'].mean:.2f} → {cur['cw'].mean:.2f}", f"{dm:+.2f}",
-                       abs(dm) >= st["wu_mean_shift"], "평균 이동"))
-        g0, g1 = grade(prev["cw"].cpk)[0], grade(cur["cw"].cpk)[0]
-        checks.append(("WU Cpk 등급", f"{g0} → {g1}", "", order.index(g1) < order.index(g0), "등급 하락"))
-        dng = cur["ng"] - prev["ng"]
-        checks.append(("NG율", f"{prev['ng']:.1f}% → {cur['ng']:.1f}%", f"{dng:+.1f}%p",
-                       dng >= st["ng_rate_increase"], "NG율 증가"))
-        for item, chg, amt, hit, why in checks:
-            flags.append([cur["name"], item, chg, amt, f"⚠ {why}" if hit else "정상"])
-            if hit:
-                ff[(len(flags) - 1, 4)] = "FEE2E2"
+    flags, n_hit = _change_detection(stats, st)
+    ws.cell(r, 2, "변화 감지").font = Font(name=FONT, size=11, bold=True, color="1E3A5F")
     if flags:
-        _table(ws, r + 1, 2, ["이벤트", "항목", "변화", "변화량", "판정"], flags, ff)
+        msg = (f"직전 이벤트 대비 확인 필요 {n_hit}건 → '변화 감지' 시트" if n_hit
+               else "직전 이벤트 대비 모든 항목이 기준 이내 → '변화 감지' 시트")
     else:
-        ws.cell(r + 1, 2, "비교할 이벤트가 2개 이상일 때 표시됩니다.").font = Font(name=FONT, size=9, color="6B7280")
+        msg = "비교할 이벤트가 2개 이상일 때 '변화 감지' 시트에 표시됩니다."
+    c = ws.cell(r, 4, msg)
+    c.font = Font(name=FONT, size=10, bold=bool(n_hit), color="B91C1C" if n_hit else "15803D", underline="single")
+    c.hyperlink = "#'변화 감지'!A1"
+    _change_sheet(wb, flags, st)
 
     # ---- 2. 트렌드(거시)
     ws2 = wb.create_sheet("트렌드(거시)")

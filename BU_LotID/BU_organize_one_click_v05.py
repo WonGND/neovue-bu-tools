@@ -22,7 +22,7 @@ _HERE = Path(__file__).resolve().parent
 for _p in (_HERE.parent / "common", _HERE / "common"):
     if _p.exists() and str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
-TOOL_VERSION = "v0.6"
+TOOL_VERSION = "v0.6.1"
 
 # 처리 대상 이미지 확장자
 ALLOWED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp")
@@ -382,7 +382,7 @@ def capability_sheet_writer(latest_measurements: dict, records: list):
         files = {m.get("source_file") for m in latest_measurements.values()}
         caps = capability_sheet.write_compare_sheet(
             wb, full[["LotID", "WU", "BU", "time"]], sub_mask, ld,
-            {"model": model, "csv_files": len(files), "version": f"Tool B {TOOL_VERSION}"})
+            {"model": model, "csv_files": len(files), "version": f"NEOVUE Tool B {TOOL_VERSION}"})
         print(f"\n[공정능력] 측정 전체 n={len(full)} · 이미지 정리본 n={int(sub_mask.sum())}" + (" · LD 모델(BU 제외)" if ld else ""))
         for name in ("WU", "BU"):
             a, b = caps[name]

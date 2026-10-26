@@ -1,4 +1,4 @@
-"""Tool B v0.6 시험 (화면 없이): 시험용 BU/WU 이미지 + 측정 CSV → crop_report.xlsx
+"""Tool B v0.6.1 시험 (화면 없이): 시험용 BU/WU 이미지 + 측정 CSV → crop_report.xlsx
 사용: python run_tool_b.py <testdata 폴더> <출력 폴더>
 1) 결과 시트는 v0.5와 같은지 (v0.5 = git 이전 버전 코드로 같은 입력 실행해서 비교)
 2) 공정능력 시트: 판정 = 측정 CSV 전체, 정리본 = 이미지 있는 LotID → Tool A와 같은 계산 값
@@ -119,4 +119,4 @@ res = tb.run_pipeline(img_root, data_root, 12, 20)
 ws = load_workbook(res["excel_path"])["공정능력_BU_WU"]
 assert ws.cell(8, 13).value == "N/A (LD 모델)", ws.cell(8, 13).value      # M열 = 판정
 print("G10 LD OK — BU N/A")
-print("Tool B v0.6 시험 통과")
+print("Tool B v0.6.1 시험 통과")

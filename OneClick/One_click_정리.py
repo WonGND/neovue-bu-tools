@@ -5,7 +5,7 @@ import threading
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, messagebox, scrolledtext
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 import pandas as pd
 from openpyxl import load_workbook
@@ -18,10 +18,11 @@ for _p in (_HERE.parent / "common", _HERE / "common"):
 
 import capability_sheet  # noqa: E402
 import history_db  # noqa: E402
+import ui_style as ui  # noqa: E402
 from capability import is_constant, summary_line  # noqa: E402
 
-VERSION = "v1.5.1"
-APP_TITLE = f"One Click 데이터 정리 도구 {VERSION}"
+VERSION = "v1.5.2"
+APP_TITLE = f"NEOVUE_OneClick_정리_{VERSION}"
 
 # [설정] 시간 포맷 및 기본 양식 경로
 TIME_FMT = "%Y.%m.%d %H:%M:%S"
@@ -224,7 +225,7 @@ def process(opts: dict, log=print) -> dict:
     if opts.get("make_cpk") and base_df is not None and "White_Uniformity" in base_df.columns:
         log(f"공정능력 계산 중... (LotID별 최신 1건, n = {len(base_df)}){' · LD 모델: BU 제외' if ld else ''}")
         model = " ".join(x for x in (cut_model, code) if x) or history_db.model_code(base_df["Panel_ID"].iloc[0])
-        meta = {"model": model, "version": f"Tool A {VERSION}",
+        meta = {"model": model, "version": f"NEOVUE Tool A {VERSION}",
                 "source": " / ".join(os.path.basename(p) for p in (ca_path, lmk_path) if p)}
         target_wb = wb
         if target_wb is None:
@@ -268,12 +269,18 @@ def process(opts: dict, log=print) -> dict:
     return result
 
 
-# ---------------------------------------------------------------- 화면
+# ---------------------------------------------------------------- 화면 (v1.5.2: Tool B·트렌드 리포트와 같은 디자인)
+T = ui.T
+
+
 class OneClickApp:
     def __init__(self, root):
         self.root = root
-        self.root.title(APP_TITLE)
-        self.root.geometry("820x900")
+        self.root.title(f"{APP_TITLE} {ui.AUTHOR}")
+        self.root.geometry("900x940")
+        self.root.minsize(760, 760)
+        ui.apply_icon(root)
+        self.style, self.font = ui.setup_style(root)
 
         self.last_saved_file = None
         self.last_saved_folder = None
@@ -281,6 +288,7 @@ class OneClickApp:
         self._main_thread = threading.current_thread()
         self.settings_path = app_base_dir() / SETTINGS_NAME
         self.settings = self._load_settings()
+        self.status = tk.StringVar(value="대기 중")
 
         self.setup_ui()
         self.log("프로그램이 시작되었습니다.")
@@ -314,75 +322,76 @@ class OneClickApp:
         except OSError:
             pass
 
+    def _path_row(self, parent, row, label, button_text, command):
+        ttk.Label(parent, text=label, style="Cap.TLabel").grid(row=row, column=0, sticky="w", pady=4)
+        ent = ttk.Entry(parent)
+        ent.grid(row=row, column=1, sticky="ew", padx=(10, 6), pady=4)
+        ttk.Button(parent, text=button_text, command=command, width=7).grid(row=row, column=2, pady=4)
+        return ent
+
     def setup_ui(self):
-        # 파일 선택 프레임
-        file_frame = tk.LabelFrame(self.root, text="입력 파일 설정 (CSV/Excel)", padx=10, pady=10)
-        file_frame.pack(fill="x", padx=10, pady=5)
+        hdr = ui.header(self.root, APP_TITLE, self.font)
+        ttk.Label(hdr, textvariable=self.status, style="HeadStatus.TLabel").pack(side="right")
 
-        tk.Label(file_frame, text="1. CA410 (색좌표):").grid(row=0, column=0, sticky="w")
-        self.ent_ca = tk.Entry(file_frame)
-        self.ent_ca.grid(row=0, column=1, sticky="ew", padx=5)
-        tk.Button(file_frame, text="찾기", command=lambda: self.browse_file(self.ent_ca, "CA410")).grid(row=0, column=2)
+        body = ttk.Frame(self.root, padding=(14, 8))
+        body.pack(fill="both", expand=True)
 
-        tk.Label(file_frame, text="2. LMK6 (BU/WU):").grid(row=1, column=0, sticky="w", pady=5)
-        self.ent_lmk = tk.Entry(file_frame)
-        self.ent_lmk.grid(row=1, column=1, sticky="ew", padx=5)
+        # ① 입력 파일
+        c1, _ = ui.card(body, "① 입력 파일", "CSV · Excel")
+        g = ttk.Frame(c1, style="Card.TFrame")
+        g.pack(fill="x", pady=(8, 0))
+        self.ent_ca = self._path_row(g, 0, "CA410 (색좌표)", "찾기", lambda: self.browse_file(self.ent_ca, "CA410"))
+        self.ent_lmk = self._path_row(g, 1, "LMK6 (BU/WU)", "찾기", lambda: self.browse_file(self.ent_lmk, "LMK6"))
         self.ent_lmk.bind("<FocusOut>", lambda _e: self.update_ld_detection())
-        tk.Button(file_frame, text="찾기", command=lambda: self.browse_file(self.ent_lmk, "LMK6")).grid(row=1, column=2)
-
-        tk.Label(file_frame, text="3. 양식 파일:").grid(row=2, column=0, sticky="w")
-        self.ent_temp = tk.Entry(file_frame)
+        self.ent_temp = self._path_row(g, 2, "양식 파일", "변경", self.browse_template)
         self.ent_temp.insert(0, self.template_path if self.template_path else "")
-        self.ent_temp.grid(row=2, column=1, sticky="ew", padx=5)
-        tk.Button(file_frame, text="변경", command=self.browse_template).grid(row=2, column=2)
-
-        tk.Label(file_frame, text="4. 저장 폴더:").grid(row=3, column=0, sticky="w", pady=5)
-        self.ent_save = tk.Entry(file_frame)
-        self.ent_save.grid(row=3, column=1, sticky="ew", padx=5)
-        tk.Button(file_frame, text="찾기", command=self.browse_folder).grid(row=3, column=2)
-
+        self.ent_save = self._path_row(g, 3, "저장 폴더", "찾기", self.browse_folder)
+        g.columnconfigure(1, weight=1)
         self.var_make_individual = tk.BooleanVar(value=True)
-        self.chk_individual = tk.Checkbutton(file_frame, text="개별 정리 파일(Cleaned) 생성 (2개 시트 구성)", variable=self.var_make_individual)
-        self.chk_individual.grid(row=4, column=0, columnspan=3, sticky="w", pady=5)
-        file_frame.columnconfigure(1, weight=1)
+        self.chk_individual = ttk.Checkbutton(c1, text="개별 정리 파일(Cleaned) 생성 (2개 시트 구성)",
+                                              variable=self.var_make_individual)
+        self.chk_individual.pack(anchor="w", pady=(8, 0))
 
-        # v1.5 분석 옵션
-        opt = tk.LabelFrame(self.root, text="분석 옵션", padx=10, pady=8)
-        opt.pack(fill="x", padx=10, pady=5)
+        # ② 분석 옵션
+        c2, _ = ui.card(body, "② 분석 옵션")
+        opt = ttk.Frame(c2, style="Card.TFrame")
+        opt.pack(fill="x", pady=(8, 0))
         self.var_cpk = tk.BooleanVar(value=bool(self.settings.get("make_cpk", True)))
-        tk.Checkbutton(opt, text="공정능력(Cp/Cpk) 시트 생성  —  WU 80~100 · BU 50~100", variable=self.var_cpk).grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Checkbutton(opt, text="공정능력(Cp/Cpk) 시트 생성  —  WU 80~100 · BU 50~100",
+                        variable=self.var_cpk).grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
         self.var_ld = tk.BooleanVar(value=False)
-        tk.Checkbutton(opt, text="LD 모델 (BU 미측정)  —  BU Cp/Cpk 제외, 'N/A (LD 모델)' 표기", variable=self.var_ld,
-                       command=self._hide_ld_note).grid(row=1, column=0, columnspan=3, sticky="w")
-        self.lbl_ld = tk.Label(opt, text="", fg="#b45309", bg="#fef3c7", anchor="w", padx=6)
+        ttk.Checkbutton(opt, text="LD 모델 (BU 미측정)  —  BU Cp/Cpk 제외, 'N/A (LD 모델)' 표기", variable=self.var_ld,
+                        command=self._hide_ld_note).grid(row=1, column=0, columnspan=3, sticky="w", pady=2)
+        self.lbl_ld = tk.Label(opt, text="", fg=T["warn_fg"], bg=T["warn"], anchor="w", padx=8, pady=3,
+                               font=(self.font, 9, "bold"))
         self.var_db = tk.BooleanVar(value=bool(self.settings.get("append_db", True)))
-        tk.Checkbutton(opt, text="누적 DB에 적재 (트렌드 리포트용, 측정 시각 함께 저장)", variable=self.var_db).grid(row=3, column=0, columnspan=3, sticky="w")
-        tk.Label(opt, text="   DB 위치:").grid(row=4, column=0, sticky="w")
-        self.ent_db = tk.Entry(opt)
+        ttk.Checkbutton(opt, text="누적 DB에 적재 (트렌드 리포트용, 측정 시각 함께 저장)",
+                        variable=self.var_db).grid(row=3, column=0, columnspan=3, sticky="w", pady=2)
+        ttk.Label(opt, text="DB 위치", style="Cap.TLabel").grid(row=4, column=0, sticky="w", pady=(4, 0))
+        self.ent_db = ttk.Entry(opt)
         self.ent_db.insert(0, self.settings.get("db_path", ""))
-        self.ent_db.grid(row=4, column=1, sticky="ew", padx=5)
-        tk.Button(opt, text="변경", command=self.browse_db).grid(row=4, column=2)
+        self.ent_db.grid(row=4, column=1, sticky="ew", padx=(10, 6), pady=(4, 0))
+        ttk.Button(opt, text="변경", command=self.browse_db, width=7).grid(row=4, column=2, pady=(4, 0))
         opt.columnconfigure(1, weight=1)
 
         # 실행 버튼
-        self.btn_run = tk.Button(self.root, text="▶ One-Click 정리 시작",
-                                 bg="#28a745", fg="white", font=("맑은 고딕", 12, "bold"),
-                                 height=2, command=self.start_process)
-        self.btn_run.pack(fill="x", padx=10, pady=10)
+        self.btn_run = ttk.Button(body, text="▶  One-Click 정리 시작", style="Big.TButton", command=self.start_process)
+        self.btn_run.pack(fill="x", pady=(0, 10))
 
-        # 로그창
-        log_frame = tk.LabelFrame(self.root, text="처리 로그", padx=10, pady=10)
-        log_frame.pack(fill="both", expand=True, padx=10, pady=5)
-        self.txt_log = scrolledtext.ScrolledText(log_frame, height=15, state="disabled", font=("Consolas", 10))
+        # ③ 결과 · 처리 로그
+        c3, t3 = ui.card(body, "③ 결과 · 처리 로그", fill="both", expand=True)
+        self.btn_open_d = ttk.Button(t3, text="폴더 열기", state="disabled", command=self.open_last_folder)
+        self.btn_open_d.pack(side="right", padx=(6, 0))
+        self.btn_open_f = ttk.Button(t3, text="결과 파일 열기", state="disabled", command=self.open_last_file)
+        self.btn_open_f.pack(side="right")
+        self.result_var = tk.StringVar(value="결과 파일: 아직 생성되지 않음")
+        ttk.Label(c3, textvariable=self.result_var, style="File.TLabel").pack(anchor="w", pady=(8, 6))
+        wrap = ttk.Frame(c3, style="Panel.TFrame", padding=1)
+        wrap.pack(fill="both", expand=True)
+        self.txt_log = scrolledtext.ScrolledText(wrap, height=12, state="disabled", font=("Consolas", 10),
+                                                 bg=T["log_bg"], fg=T["log_fg"], insertbackground=T["log_fg"],
+                                                 relief="flat", borderwidth=8)
         self.txt_log.pack(fill="both", expand=True)
-
-        # 결과 버튼
-        res_frame = tk.Frame(self.root)
-        res_frame.pack(fill="x", padx=10, pady=10)
-        self.btn_open_f = tk.Button(res_frame, text="결과 파일 열기", state="disabled", command=self.open_last_file)
-        self.btn_open_f.pack(side="left", expand=True, fill="x", padx=5)
-        self.btn_open_d = tk.Button(res_frame, text="폴더 열기", state="disabled", command=self.open_last_folder)
-        self.btn_open_d.pack(side="left", expand=True, fill="x", padx=5)
 
     # ---- LD 자동 감지 (D3 B안: 데이터 검사로 미리 체크, 사람은 확인)
     def update_ld_detection(self):
@@ -485,6 +494,7 @@ class OneClickApp:
                 "make_cpk": self.var_cpk.get(), "ld": self.var_ld.get(),
                 "append_db": self.var_db.get(), "db_path": self.ent_db.get().strip()}
         self.btn_run.config(state="disabled", text="처리 중...")
+        self.status.set("처리 중")
         threading.Thread(target=self.run, args=(opts,), daemon=True).start()
 
     def run(self, opts):
@@ -494,23 +504,30 @@ class OneClickApp:
             if out_path:
                 self.last_saved_file = out_path
                 self.last_saved_folder = opts["save_dir"]
-                self.root.after(0, self._set_result_buttons, True)
-                self.root.after(0, messagebox.showinfo, "성공", "데이터 정리가 완료되었습니다.")
+                self.root.after(0, self._done, out_path)
             else:
                 self.log("⚠ 작업은 완료되었으나 생성된 파일이 없습니다 (옵션 확인).")
+                self.root.after(0, self.status.set, "완료 (생성 파일 없음)")
         except Exception as e:
             self.log(f"❌ 에러: {str(e)}")
+            self.root.after(0, self.status.set, "오류")
             self.root.after(0, messagebox.showerror, "오류", f"처리 중 에러 발생:\n{str(e)}")
         finally:
-            self.root.after(0, self._set_run_button, "normal", "▶ One-Click 정리 시작")
+            self.root.after(0, self._set_run_button, "normal", "▶  One-Click 정리 시작")
+
+    def _done(self, out_path):
+        self._set_result_buttons(True)
+        self.result_var.set(f"결과 파일: {os.path.basename(out_path)}")
+        self.status.set("완료")
+        messagebox.showinfo("성공", "데이터 정리가 완료되었습니다.")
 
     def open_last_file(self):
         if self.last_saved_file:
-            os.startfile(self.last_saved_file)
+            ui.open_path(self.last_saved_file)
 
     def open_last_folder(self):
         if self.last_saved_folder:
-            os.startfile(self.last_saved_folder)
+            ui.open_path(self.last_saved_folder)
 
 
 if __name__ == "__main__":

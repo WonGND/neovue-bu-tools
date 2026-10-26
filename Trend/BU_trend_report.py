@@ -1,4 +1,6 @@
-"""BU 트렌드 리포트 v0.2 — 측정일·이벤트 한 표 · 파일 끌어놓기/선택 → 이벤트 지정 · 트렌드 리포트
+"""NEOVUE BU 트렌드 리포트 v0.3 — 측정일·이벤트 한 표 · 파일 끌어놓기/선택 → 이벤트 지정 · 트렌드 리포트
+
+v0.3: NEOVUE 이름 · 리포트 '엑셀 열기'·'폴더 열기' 버튼 · 변화 감지 설명 보강 · 공용 화면 스타일
 
 v0.2 변경 (사용자 피드백)
 - 이벤트 관리 표와 업로드 표를 '측정일 · 이벤트' 한 표로 합침. 기간·날짜 입력 없음
@@ -8,14 +10,10 @@ v0.2 변경 (사용자 피드백)
 """
 from __future__ import annotations
 
-import base64
-import io
 import json
-import os
 import sys
 import threading
 import tkinter as tk
-import tkinter.font as tkfont
 from datetime import date, datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -29,18 +27,17 @@ import pandas as pd  # noqa: E402
 
 import history_db as db  # noqa: E402
 import trend_report as tr  # noqa: E402
+import ui_style as ui  # noqa: E402
 
 try:                                            # 파일 끌어다 놓기 (없으면 '파일 추가' 버튼만)
     from tkinterdnd2 import DND_FILES, TkinterDnD
 except Exception:                               # pragma: no cover - 설치 안 된 PC
     DND_FILES = TkinterDnD = None
 
-APP_TITLE = f"BU_TREND_리포트_{tr.VERSION}"
-AUTHOR = "(made by Kwakwonyong)"
+APP_TITLE = f"NEOVUE_BU_TREND_리포트_{tr.VERSION}"
+AUTHOR = ui.AUTHOR
 SETTINGS_NAME = "BU_TREND_settings.json"
-T = {"app": "#f3f4f6", "card": "#e9eef5", "panel": "#ffffff", "text": "#111827", "sub": "#6b7280",
-     "accent": "#2563eb", "header": "#f8fafc", "warn": "#fef3c7", "warn_fg": "#92400e", "done": "#e5e7eb",
-     "group": "#dbe4f0", "todo_row": "#fffbeb", "drop": "#dbeafe"}
+T = ui.T
 METRICS = ("BU·WU", "White 휘도·CR", "White x/y")
 UNASSIGNED = "미지정"
 
@@ -291,8 +288,8 @@ class TrendApp:
         self.root = root
         root.title(f"{APP_TITLE} {AUTHOR}")
         root.geometry("1120x900")
-        root.configure(bg=T["app"])
-        self.font = "Malgun Gothic" if "Malgun Gothic" in tkfont.families(root) else "TkDefaultFont"
+        ui.apply_icon(root)
+        self.font = ui.font_family(root)
         root.app_font = self.font
         self.settings_path = app_base_dir() / SETTINGS_NAME
         self.settings = self._load_settings()
@@ -341,70 +338,8 @@ class TrendApp:
 
     # ---------------------------------------------------------------- 화면
     def _style(self):
-        f = self.font
-        st = ttk.Style()
-        st.theme_use("clam")
-        st.configure("TFrame", background=T["app"])
-        st.configure("Card.TFrame", background=T["card"])
-        st.configure("Header.TFrame", background=T["header"])
-        st.configure("Title.TLabel", background=T["header"], foreground=T["text"], font=(f, 20, "bold"))
-        st.configure("Author.TLabel", background=T["header"], foreground=T["sub"], font=(f, 10, "bold"))
-        st.configure("HeadInfo.TLabel", background=T["header"], foreground=T["sub"], font=(f, 9))
-        st.configure("Sec.TLabel", background=T["card"], foreground=T["text"], font=(f, 14, "bold"))
-        st.configure("Cap.TLabel", background=T["card"], foreground=T["sub"], font=(f, 10, "bold"))
-        st.configure("Note.TLabel", background=T["card"], foreground=T["sub"], font=(f, 9))
-        st.configure("Drop.TLabel", background=T["drop"], foreground=T["accent"], font=(f, 10, "bold"))
-        # 기본 라벨·라디오 배경을 창 배경과 같게 (clam 기본 회색 배경 제거)
-        st.configure("TLabel", font=(f, 10), background=T["app"])
-        st.configure("Hint.TLabel", font=(f, 9), background=T["app"], foreground=T["sub"])
-        st.configure("TRadiobutton", font=(f, 10), background=T["app"])
-        st.map("TRadiobutton", background=[("active", T["app"])])
-        st.map("TCombobox", fieldbackground=[("readonly", "white")], selectbackground=[("readonly", "white")],
-               selectforeground=[("readonly", T["text"])])
-        st.configure("TButton", font=(f, 9, "bold"), padding=6)
-        st.configure("Big.TButton", font=(f, 12, "bold"), padding=10, background=T["accent"], foreground="white")
-        st.map("Big.TButton", background=[("active", "#1d4ed8"), ("disabled", "#94a3b8")])
-        self._check_style(st)
-        st.configure("TCheckbutton", background=T["card"], font=(f, 10))
-        st.map("TCheckbutton", background=[("active", T["card"])])
-        st.configure("Treeview", font=(f, 9), rowheight=26, background=T["panel"], fieldbackground=T["panel"])
-        st.configure("Treeview.Heading", font=(f, 9, "bold"))
-        st.configure("Status.TLabel", background=T["header"], foreground=T["text"], font=(f, 9))
-
-    def _check_style(self, st):
-        """체크박스 표시를 X 대신 ✓ 로: 화면 배율에 맞춘 그림으로 표시 칸을 바꿔 끼운다."""
-        if hasattr(self, "_chk_imgs"):
-            return
-        try:
-            from PIL import Image, ImageDraw
-        except ImportError:                           # Pillow가 없으면 기본 표시 유지
-            return
-        scale = float(self.root.tk.call("tk", "scaling")) / (96 / 72)   # 100% 화면 = 1.0
-        s = max(14, round(15 * scale))
-
-        def png(checked):
-            big = s * 4
-            im = Image.new("RGBA", (big, big), (0, 0, 0, 0))
-            d = ImageDraw.Draw(im)
-            box = [4, 4, big - 5, big - 5]
-            if checked:
-                d.rounded_rectangle(box, radius=big // 6, fill=T["accent"])
-                w = max(5, big // 9)
-                d.line([(big * .26, big * .52), (big * .43, big * .69), (big * .75, big * .33)],
-                       fill="white", width=w, joint="curve")
-            else:
-                d.rounded_rectangle(box, radius=big // 6, fill="white", outline="#9ca3af", width=max(4, big // 16))
-            buf = io.BytesIO()
-            im.resize((s, s), Image.LANCZOS).save(buf, "PNG")
-            return tk.PhotoImage(master=self.root, data=base64.b64encode(buf.getvalue()))
-
-        self._chk_imgs = (png(False), png(True))
-        st.element_create("Tick.indicator", "image", self._chk_imgs[0], ("selected", self._chk_imgs[1]),
-                          width=s + round(6 * scale), sticky="w")
-        st.layout("TCheckbutton", [("Checkbutton.padding", {"sticky": "nswe", "children": [
-            ("Tick.indicator", {"side": "left", "sticky": ""}),
-            ("Checkbutton.focus", {"side": "left", "sticky": "w", "children": [
-                ("Checkbutton.label", {"sticky": "nswe"})]})]})])
+        st, _ = ui.setup_style(self.root)          # 공용 스타일 (Tool A · Tool B와 같은 색 · ✓ 체크박스)
+        st.configure("Recent.TLabel", background=T["card"], foreground=T["text"], font=(self.font, 9, "bold"))
 
     def _card(self, title, note=None):
         c = ttk.Frame(self.body, padding=12, style="Card.TFrame")
@@ -417,11 +352,7 @@ class TrendApp:
         return c, top
 
     def _build(self):
-        hdr = ttk.Frame(self.root, padding=(18, 12), style="Header.TFrame")
-        hdr.pack(fill="x")
-        tk.Label(hdr, text="▣", font=(self.font, 16, "bold"), fg=T["accent"], bg=T["header"]).pack(side="left")
-        ttk.Label(hdr, text=APP_TITLE, style="Title.TLabel").pack(side="left", padx=(10, 0))
-        ttk.Label(hdr, text=AUTHOR, style="Author.TLabel").pack(side="left", padx=(5, 0), pady=(8, 0))
+        hdr = ui.header(self.root, APP_TITLE, self.font)
         ttk.Button(hdr, text="DB 변경", command=self.change_db).pack(side="right")
         self.db_label = ttk.Label(hdr, text="", style="HeadInfo.TLabel")
         self.db_label.pack(side="right", padx=(0, 10))
@@ -469,6 +400,16 @@ class TrendApp:
             ttk.Checkbutton(mb, text=m, variable=self.metric_vars[m]).grid(row=0, column=i, sticky="w", padx=(0, 18))
         self.btn_report = ttk.Button(c3, text="▶  트렌드 리포트 생성", style="Big.TButton", command=self.make_report)
         self.btn_report.pack(fill="x", pady=(12, 0))
+        # v0.3: 만든 리포트 바로 열기
+        rr = ttk.Frame(c3, style="Card.TFrame")
+        rr.pack(fill="x", pady=(10, 0))
+        self.recent_var = tk.StringVar()
+        ttk.Label(rr, textvariable=self.recent_var, style="Recent.TLabel").pack(side="left")
+        self.btn_open_folder = ttk.Button(rr, text="폴더 열기", command=self.open_report_folder)
+        self.btn_open_folder.pack(side="right", padx=(6, 0))
+        self.btn_open_excel = ttk.Button(rr, text="엑셀 열기", command=self.open_report)
+        self.btn_open_excel.pack(side="right")
+        self._update_recent()
 
         bar = ttk.Frame(self.root, padding=(18, 6), style="Header.TFrame")
         bar.pack(fill="x", side="bottom")
@@ -834,8 +775,40 @@ class TrendApp:
             messagebox.showerror("리포트 오류", str(exc))
             return
         self.log(f"리포트 저장: {Path(path).name}")
-        if messagebox.askyesno("완료", "트렌드 리포트를 만들었습니다. 지금 열까요?") and hasattr(os, "startfile"):
-            os.startfile(path)
+        self.settings["last_report"] = str(path)
+        self._save_settings()
+        self._update_recent()
+        if messagebox.askyesno("완료", "트렌드 리포트를 만들었습니다. 지금 열까요?\n(나중에 '엑셀 열기' 버튼으로도 열 수 있어요)"):
+            self.open_report()
+
+    # ---------------------------------------------------------------- 리포트 열기 (v0.3)
+    def _last_report(self) -> Path | None:
+        p = self.settings.get("last_report")
+        return Path(p) if p and Path(p).exists() else None
+
+    def _update_recent(self):
+        p = self._last_report()
+        self.recent_var.set(f"최근 리포트: {p.name}" if p else "최근 리포트: 아직 없음")
+        self.btn_open_excel.config(state="normal" if p else "disabled")
+        folder = p.parent if p else Path(self.settings.get("report_dir") or "")
+        self.btn_open_folder.config(state="normal" if str(folder) not in ("", ".") and folder.exists() else "disabled")
+
+    def open_report(self):
+        p = self._last_report()
+        if not p:
+            messagebox.showinfo("엑셀 열기", "최근 리포트 파일을 찾을 수 없습니다 (옮겼거나 지웠을 수 있어요).")
+            self._update_recent()
+            return
+        try:
+            ui.open_path(p)
+        except OSError as exc:
+            messagebox.showerror("엑셀 열기", str(exc))
+
+    def open_report_folder(self):
+        p = self._last_report()
+        folder = p.parent if p else Path(self.settings.get("report_dir") or "")
+        if folder.exists():
+            ui.open_path(folder)
 
     def change_db(self):
         p = filedialog.asksaveasfilename(title="누적 DB 파일 (Tool A와 같은 파일)", defaultextension=".xlsx",

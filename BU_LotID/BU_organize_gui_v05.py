@@ -21,12 +21,13 @@ def get_pipeline():
     from BU_organize_one_click_v05 import PipelineCancelled, run_pipeline
     return PipelineCancelled, run_pipeline
 
-APP_TITLE = "TOVIS_BU_DATA_정리_v0.6"
+APP_TITLE = "NEOVUE_BU_DATA_정리_v0.6.1"
 AUTHOR_NAME = "(made by Kwakwonyong)"
 APP_NAME = f"{APP_TITLE} {AUTHOR_NAME}"
-ICON_FILENAME = "tovis_bu_data.ico"
-SETTINGS_FILENAME = "tovis_bu_data_settings_v05.json"
-LOG_FILENAME = "TOVIS_BU_DATA_정리_v0.6_log.txt"
+ICON_FILENAME = "neovue_bu_data.ico"
+SETTINGS_FILENAME = "neovue_bu_data_settings.json"
+LEGACY_SETTINGS = ("tovis_bu_data_settings_v05.json",)   # v0.6 이전 설정 파일 (있으면 한 번 읽음)
+LOG_FILENAME = "NEOVUE_BU_DATA_정리_log.txt"
 
 THEMES = {
     "light": {
@@ -71,7 +72,8 @@ def get_app_base_dir() -> Path:
 
 
 ICON_PATH = Path(__file__).with_name(ICON_FILENAME)
-SETTINGS_PATH = Path(__file__).with_name(SETTINGS_FILENAME)
+# v0.6.1: 설정은 exe 옆에 저장 (이전에는 exe 임시 폴더에 저장돼 다시 열면 사라짐)
+SETTINGS_PATH = get_app_base_dir() / SETTINGS_FILENAME
 LOG_PATH = get_app_base_dir() / LOG_FILENAME
 
 
@@ -194,12 +196,15 @@ class BUOrganizeApp:
 
     def _load_settings(self) -> dict:
         settings = self._default_settings()
-        if SETTINGS_PATH.exists():
-            try:
-                loaded = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-                settings.update(loaded)
-            except (OSError, json.JSONDecodeError):
-                pass
+        candidates = [SETTINGS_PATH] + [get_app_base_dir() / n for n in LEGACY_SETTINGS] \
+            + [Path(__file__).with_name(n) for n in LEGACY_SETTINGS]
+        for path in candidates:
+            if path.exists():
+                try:
+                    settings.update(json.loads(path.read_text(encoding="utf-8")))
+                    break
+                except (OSError, json.JSONDecodeError):
+                    pass
         return settings
 
     def _save_settings(self) -> None:

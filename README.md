@@ -1,36 +1,38 @@
-# tovis-bu-tools
+# neovue-bu-tools
 
-TOVIS(NEOVUE) BU 설비 데이터 정리·분석 도구 모음.
+NEOVUE BU 설비 데이터 정리·분석 도구 모음. 세 툴 모두 같은 화면 디자인(머리글 · 카드 · 파란 실행 버튼)과 `(made by Kwakwonyong)` 표시.
 
 ## 포함 도구
 
-### OneClick (`OneClick/`) — Tool A v1.5.1
+### OneClick (`OneClick/`) — Tool A v1.5.2 (`NEOVUE_OneClick_정리`)
 BU 설비 광학 데이터(CA410, LMK6)를 양식 Excel에 자동 정리하는 Tkinter GUI 도구.
 v1.5부터 BU/WU 공정능력(Cp/Cpk) 시트, LD 모델 자동 체크, 누적 DB 적재를 지원.
 v1.5.1부터 누적 DB 기본 위치가 `문서\BU_Tools\BU_History_DB.xlsx` (트렌드 리포트와 같은 파일).
+v1.5.2부터 화면 디자인을 Tool B·트렌드 리포트와 통일.
 
 - `One_click_정리.py` - 메인 Python 소스
-- `OneClick_정리_v1.5.1.spec` - PyInstaller spec (현재 버전)
-- `OneClick_정리_v1.5.spec`, `OneClick_정리_v1.4.spec`, `OneClick_정리_v1.4.1.spec` - 이전 버전 spec
+- `NEOVUE_OneClick_정리_v1.5.2.spec` - PyInstaller spec (이전 버전 spec은 git 기록에)
 - `양식_Daily data_BU설비_광학데이터_날짜.xlsx` - 기본 양식 파일
 
-### BU_LotID (`BU_LotID/`) — Tool B v0.6
+### BU_LotID (`BU_LotID/`) — Tool B v0.6.1 (`NEOVUE_BU_DATA_정리`)
 BU/WU 이미지 파일을 LotID 단위로 묶어 Excel로 정리하는 Tkinter GUI 도구.
 v0.6부터 `crop_report.xlsx`에 공정능력 시트 추가 (판정 = 그 실행에서 고른 측정 CSV 전체, 이미지 정리본 LotID는 참고로 표시).
 설정 화면에서 끌 수 있음. 결과 시트는 v0.5와 같음.
 
 - `BU_organize_gui_v05.py`, `BU_organize_one_click_v05.py` - 소스 (파일 이름은 v0.5 그대로)
-- `TOVIS_BU_DATA_정리_v0.6.spec` - PyInstaller spec (현재 버전), `TOVIS_BU_DATA_정리_v0.5.spec` - 이전 버전
+- `NEOVUE_BU_DATA_정리_v0.6.1.spec` - PyInstaller spec
+- `neovue_bu_data.ico` - 세 툴 공용 아이콘 (exe·창 아이콘)
 
-### Trend (`Trend/`) — BU 트렌드 리포트 v0.2
+### Trend (`Trend/`) — BU 트렌드 리포트 v0.3 (`NEOVUE_BU_TREND_리포트`)
 측정일·이벤트 한 표, 통합정리 파일 끌어다 놓기/선택 → 이벤트만 입력, 이벤트별 트렌드 리포트(거시·미시).
+v0.3: 리포트 '엑셀 열기'·'폴더 열기' 버튼, '변화 감지' 시트(읽는 법·경고 기준·의미/확인할 것).
 
 - `BU_trend_report.py` - GUI
 - `trend_report.py` - 통합정리 파일 읽기·리포트 생성 로직
-- `BU_TREND_리포트_v0.2.spec` - PyInstaller spec
+- `NEOVUE_BU_TREND_리포트_v0.3.spec` - PyInstaller spec
 
 ### 공용 모듈 (`common/`)
-`capability.py`(계산) · `capability_sheet.py`(공정능력 시트) · `charts.py`(그림) · `history_db.py`(누적 DB)
+`capability.py`(계산) · `capability_sheet.py`(공정능력 시트) · `charts.py`(그림) · `history_db.py`(누적 DB) · `ui_style.py`(공용 화면 스타일 · 아이콘 · 파일 열기)
 
 ### 시험 (`tests/`)
 - `make_test_datalogs.py` - 실측 Daily data로 시험용 CA410/LMK6 DataLog 생성(재측정 중복·LD 모델 포함)
@@ -49,9 +51,9 @@ python -m pip install pandas openpyxl numpy pillow matplotlib tkinterdnd2 pyinst
 `python -m PyInstaller`로 실행하면 패키지를 설치한 그 파이썬으로 빌드됩니다.
 
 ```powershell
-cd OneClick;  python -m PyInstaller --noconfirm OneClick_정리_v1.5.1.spec
-cd ..\Trend;  python -m PyInstaller --noconfirm BU_TREND_리포트_v0.2.spec
-cd ..\BU_LotID; python -m PyInstaller --noconfirm TOVIS_BU_DATA_정리_v0.6.spec
+cd OneClick;  python -m PyInstaller --noconfirm NEOVUE_OneClick_정리_v1.5.2.spec
+cd ..\Trend;  python -m PyInstaller --noconfirm NEOVUE_BU_TREND_리포트_v0.3.spec
+cd ..\BU_LotID; python -m PyInstaller --noconfirm NEOVUE_BU_DATA_정리_v0.6.1.spec
 ```
 
 - 성공하면 마지막 줄에 `Build complete! The results are available in: <경로>`가 나오고, exe는 그 경로(명령을 실행한 폴더의 `dist`)에 생깁니다.
