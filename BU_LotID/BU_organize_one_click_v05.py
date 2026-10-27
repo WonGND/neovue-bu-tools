@@ -22,7 +22,7 @@ _HERE = Path(__file__).resolve().parent
 for _p in (_HERE.parent / "common", _HERE / "common"):
     if _p.exists() and str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
-TOOL_VERSION = "v0.6.1"
+TOOL_VERSION = "v0.6.2"
 
 # 처리 대상 이미지 확장자
 ALLOWED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp")

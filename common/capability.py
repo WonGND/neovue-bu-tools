@@ -18,6 +18,19 @@ GRADES = ((1.67, "양호", "D1FAE5"), (1.33, "적합", "DBEAFE"), (1.00, "주의
 D2 = 1.128          # 이동범위(n=2) 관리도 상수
 MIN_N_WARN = 30
 SKEW_WARN = 0.5
+INVALID_WU = -100.0  # LMK6가 측정 실패 때 남기는 값 → 분석에서 제외
+
+
+def is_invalid_wu(values):
+    """WU = -100(측정 이상값)인 행 표시. pandas Series를 넣으면 같은 인덱스의 bool Series"""
+    try:
+        import pandas as pd
+        if isinstance(values, pd.Series):
+            return pd.to_numeric(values, errors="coerce").sub(INVALID_WU).abs().lt(1e-9)
+    except ImportError:                     # pragma: no cover
+        pass
+    x = np.asarray([float(v) if str(v).strip() not in ("", "None", "nan") else np.nan for v in values], dtype=float)
+    return np.abs(x - INVALID_WU) < 1e-9
 
 
 def grade(v: float | None) -> tuple[str, str]:

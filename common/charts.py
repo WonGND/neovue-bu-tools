@@ -359,3 +359,70 @@ def cpk_ng_combo(labels, wu_cpk, bu_cpk, ng, warn=None, title="Cpk 추이 + NG�
     ax.legend(h1 + h2, l1 + l2, loc="upper center", fontsize=8, frameon=False, ncol=3, bbox_to_anchor=(0.5, -0.1))
     ax.set_title(title, loc="left", fontsize=11, fontweight="bold")
     return _png(fig)
+
+
+# ------------------------------------------------------------------ 색좌표 확대 (트렌드 v0.5)
+_CLOUD = ["#94a3b8", "#f59e0b", "#10b981", "#a855f7", "#ef4444", "#14b8a6", "#f97316", "#64748b"]
+
+
+def _ellipse(ax, x, y, color, k=2.0):
+    """평균 ± kσ 타원 (공분산 기준)"""
+    if len(x) < 3:
+        return
+    cov = np.cov(x, y)
+    if not np.all(np.isfinite(cov)):
+        return
+    vals, vecs = np.linalg.eigh(cov)
+    vals = np.clip(vals, 0, None)
+    t = np.linspace(0, 2 * np.pi, 120)
+    circ = np.vstack([np.cos(t), np.sin(t)]) * k * np.sqrt(vals)[:, None]
+    pts = vecs @ circ
+    ax.plot(np.mean(x) + pts[0], np.mean(y) + pts[1], color=color, lw=1.2)
+
+
+def white_xy_cloud(groups: dict, typ=(0.293, 0.320), gcs=0.005, title="White 색좌표 분포 (확대)",
+                   width=5.0, height=3.8, highlight_last=True) -> bytes:
+    """실제 측정점이 있는 영역만 확대. groups = {라벨: (x 배열, y 배열)} (순서대로)
+    점 = 개별 측정, 타원 = 평균 ± 2σ, 굵은 점과 선 = 평균 이동. Typ·GCS 원은 보이는 부분만"""
+    fig, ax = plt.subplots(figsize=(width, height))
+    allx, ally, means = [], [], []
+    names = list(groups)
+    for k, name in enumerate(names):
+        x, y = (np.asarray(v, dtype=float) for v in groups[name])
+        ok = np.isfinite(x) & np.isfinite(y)
+        x, y = x[ok], y[ok]
+        if not len(x):
+            means.append((np.nan, np.nan))
+            continue
+        col = BLUE if (highlight_last and k == len(names) - 1) else _CLOUD[k % len(_CLOUD)]
+        ax.scatter(x, y, s=5, color=col, alpha=0.35, linewidths=0)
+        _ellipse(ax, x, y, col)
+        means.append((x.mean(), y.mean()))
+        ax.scatter([x.mean()], [y.mean()], s=42, color=col, edgecolor="white", zorder=4, label=f"{name} (n={len(x)})")
+        allx.append(x)
+        ally.append(y)
+    if not allx:
+        plt.close(fig)
+        return white_xy([], [], [], typ, gcs, title, width, height)
+    m = np.array(means, dtype=float)
+    good = np.isfinite(m[:, 0])
+    if good.sum() > 1:
+        ax.plot(m[good, 0], m[good, 1], color=INK, lw=1, zorder=3)
+    X, Y = np.concatenate(allx), np.concatenate(ally)
+    lo_x, hi_x = np.percentile(X, [0.5, 99.5])
+    lo_y, hi_y = np.percentile(Y, [0.5, 99.5])
+    half = max(hi_x - lo_x, hi_y - lo_y, 0.0008) / 2 * 1.25
+    cx, cy = (lo_x + hi_x) / 2, (lo_y + hi_y) / 2
+    if typ is not None:
+        th = np.linspace(0, 2 * np.pi, 400)
+        ax.plot(typ[0] + gcs * np.cos(th), typ[1] + gcs * np.sin(th), color=RED, ls="--", lw=1)
+        ax.scatter([typ[0]], [typ[1]], marker="+", color=RED, s=60)
+    ax.set_aspect("equal")
+    ax.set_xlim(cx - half, cx + half)
+    ax.set_ylim(cy - half, cy + half)
+    ax.ticklabel_format(useOffset=False)
+    ax.set_xlabel("White x")
+    ax.set_ylabel("White y")
+    ax.legend(fontsize=7, frameon=False, loc="best")
+    ax.set_title(title, loc="left", fontsize=10, fontweight="bold")
+    return _png(fig)

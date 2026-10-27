@@ -21,7 +21,7 @@ def get_pipeline():
     from BU_organize_one_click_v05 import PipelineCancelled, run_pipeline
     return PipelineCancelled, run_pipeline
 
-APP_TITLE = "NEOVUE_BU_DATA_정리_v0.6.1"
+APP_TITLE = "NEOVUE_BU_DATA_정리_v0.6.2"
 AUTHOR_NAME = "(made by Kwakwonyong)"
 APP_NAME = f"{APP_TITLE} {AUTHOR_NAME}"
 ICON_FILENAME = "neovue_bu_data.ico"

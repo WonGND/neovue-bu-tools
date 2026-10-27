@@ -1,35 +1,35 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Tool B v0.6 — v0.5 + 공정능력(Cp/Cpk) 시트 (측정 CSV 전체 기준 + 이미지 정리본 표시)
 
 from pathlib import Path
 import _tkinter
-import importlib.util
 import sysconfig
 from PyInstaller.utils.hooks import collect_data_files
 
+import importlib.util
+
 # 실행 위치(현재 폴더)와 상관없이 spec 파일이 있는 폴더를 기준으로 경로를 잡는다
 project_dir = Path(SPECPATH).resolve()
-common_dir = project_dir.parent / "common"   # v0.6: 공용 모듈(capability, capability_sheet, charts)
+common_dir = project_dir.parent / "common"   # v1.5: 공용 모듈(capability, charts, history_db)
 
 # 빌드 전 점검: 빠진 것이 있으면 exe를 만들지 않고 바로 이유를 알려준다
-_missing_files = [m + ".py" for m in ("capability", "capability_sheet", "charts", "ui_style") if not (common_dir / (m + ".py")).exists()]
+_missing_files = [m + ".py" for m in ('capability', 'charts', 'history_db', 'ui_style') if not (common_dir / (m + ".py")).exists()]
 if _missing_files:
     raise SystemExit("[빌드 중단] common 폴더에 공용 모듈이 없습니다: " + ", ".join(_missing_files)
-                     + "\n  압축을 푼 neovue-bu-tools 폴더 구조(BU_LotID·common)를 그대로 두세요.")
-_missing_pkgs = [m for m in ("pandas", "openpyxl", "numpy", "matplotlib", "PIL") if importlib.util.find_spec(m) is None]
+                     + "\n  압축을 푼 neovue-bu-tools 폴더 구조(OneClick·Trend·common)를 그대로 두세요.")
+_missing_pkgs = [m for m in ("pandas", "openpyxl", "numpy", "matplotlib", "tkinterdnd2")   # v0.2: 파일 끌어다 놓기
+                 if importlib.util.find_spec(m) is None]
 if _missing_pkgs:
-    _pip = {"PIL": "Pillow"}
     raise SystemExit("[빌드 중단] 이 파이썬에 설치되지 않은 패키지: " + ", ".join(_missing_pkgs)
-                     + "\n  설치: python -m pip install " + " ".join(_pip.get(m, m) for m in _missing_pkgs)
+                     + "\n  설치: python -m pip install " + " ".join(_missing_pkgs)
                      + "\n  빌드: python -m PyInstaller --noconfirm " + Path(SPEC).name)
-
 python_base = Path(sysconfig.get_config_var("base"))
 runtime_base = Path(_tkinter.__file__).resolve().parents[1]
 tcl_root = python_base / "tcl"
+dll_root = python_base / "DLLs"
+
 if not (tcl_root / "tcl8.6").exists():
     tcl_root = runtime_base / "tcl"
-dll_root = python_base / "DLLs"
-if not (dll_root / "_tkinter.pyd").exists():
+if not (dll_root / "tcl86t.dll").exists():
     dll_root = runtime_base / "DLLs"
 
 binaries = []
@@ -41,9 +41,15 @@ for dll_name in ("tcl86t.dll", "tk86t.dll"):
 icon_file = project_dir.parent / "BU_LotID" / "neovue_bu_data.ico"
 datas = [(str(icon_file), ".")] if icon_file.exists() else []
 datas.extend(collect_data_files("tkinter"))
+# tkdnd 라이브러리: 빌드하는 PC 것만 (예: win-x64). PyInstaller 기본 hook이 없을 때를 대비해 직접 넣음
+import platform as _pf
+import sys as _sys
+_os = "win" if _sys.platform.startswith("win") else ("osx" if _sys.platform == "darwin" else "linux")
+_arch = {"amd64": "x64", "x86_64": "x64", "arm64": "arm64", "aarch64": "arm64", "x86": "x86", "i386": "x86",
+         "i686": "x86"}.get(_pf.machine().lower(), "x64")
+datas.extend(d for d in collect_data_files("tkinterdnd2") if Path(d[1]).name in (f"{_os}-{_arch}", "tkdnd"))
 
 for source, target in (
-    (project_dir / "tkinter", "tkinter"),
     (tcl_root / "tcl8.6", "_tcl_data"),
     (tcl_root / "tk8.6", "_tk_data"),
 ):
@@ -51,12 +57,13 @@ for source, target in (
         datas.append((str(source), target))
 
 a = Analysis(
-    [str(project_dir / "BU_organize_gui_v05.py")],
+    ["BU_trend_report.py"],
     pathex=[str(project_dir), str(common_dir)],
     binaries=binaries,
     datas=datas,
-    hiddenimports=["tkinter", "_tkinter", "BU_organize_one_click_v05", "pandas", "numpy",
-                   "matplotlib", "matplotlib.backends.backend_agg", "capability", "capability_sheet", "charts", "ui_style"],
+    hiddenimports=["tkinter", "_tkinter", "pandas", "openpyxl", "numpy",
+                   "matplotlib", "matplotlib.backends.backend_agg",
+                   "capability", "charts", "history_db", "trend_report", "tkinterdnd2", "PIL.Image", "PIL.ImageDraw", "ui_style"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -64,6 +71,7 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -72,7 +80,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="NEOVUE_BU_DATA_정리_v0.6.1",
+    name="NEOVUE_BU_TREND_리포트_v0.5",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

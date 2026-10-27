@@ -28,9 +28,9 @@ for _p in (_HERE.parent / "common", _HERE / "common"):
 
 import charts as CHARTS  # noqa: E402
 import history_db as db  # noqa: E402
-from capability import SPECS, capability, grade, is_constant  # noqa: E402
+from capability import SPECS, capability, grade, is_constant, is_invalid_wu  # noqa: E402
 
-VERSION = "v0.4"
+VERSION = "v0.5"
 FONT = "맑은 고딕"
 DEFAULT_SETTINGS = {
     "bu_sigma_increase_pct": 20.0,      # 직전 이벤트 대비 BU σ 증가 경고(%)
@@ -113,30 +113,6 @@ def rows_for_db(parsed: dict, meas_date: date, path, manual_event: str = "") -> 
     df["Tool"] = f"BU_TREND {VERSION}"
     df["EEPROM_59"] = df["EEPROM_59"].astype(str)
     return df
-
-
-# ------------------------------------------------------------------ NG 이력 이미지 링크 (v0.4)
-def bu_image_index(root, log=print) -> dict:
-    """Tool B 결과(…_cropped_v1/<LotID>/<LotID>_BU_1.png)를 찾아 {Lot ID(정규화): {'BU': 경로, 'WU': 경로}}.
-    같은 Lot ID가 여러 결과 폴더에 있으면 최근 파일. 고른 폴더 자체가 결과 폴더여도 됨."""
-    root = Path(root)
-    if not root.exists():
-        log(f"⚠ BU Image 폴더가 없습니다: {root}")
-        return {}
-    dirs = [root] if "_cropped" in root.name else []
-    dirs += [d for d in root.rglob("*_cropped*") if d.is_dir()]
-    idx, when = {}, {}
-    for d in dirs:
-        for f in d.glob("*/*.png"):
-            m = re.match(r"(.+?)_(BU|WU)_\d+$", f.stem, re.I)
-            if not m:
-                continue
-            key, kind = db.normalize_lot_id(m.group(1)), m.group(2).upper()
-            t = f.stat().st_mtime
-            if t >= when.get((key, kind), -1):
-                when[(key, kind)] = t
-                idx.setdefault(key, {})[kind] = f.resolve()
-    return idx
 
 
 # ------------------------------------------------------------------ 엑셀 도우미
@@ -231,12 +207,12 @@ def _event_stats(name, g, ev_row):
 
 # ------------------------------------------------------------------ 변화 감지 (v0.3: 설명 보강, 별도 시트)
 CHANGE_MEANING = {
-    "BU σ": "BU 산포(흩어짐)가 커짐 → 자재·공정 편차, 측정 조건(지그·암실·설비 상태) 확인",
-    "BU 평균": "BU 분포 전체가 이동 → 자재 Lot · 공정 조건 변경 여부 확인",
-    "BU Cpk 등급": "규격 하한(50) 대비 여유가 줄어 등급 하락 → σ·평균 중 원인 확인",
-    "WU 평균": "WU 분포 전체가 이동 → 자재 Lot · 공정 조건 변경 여부 확인",
-    "WU Cpk 등급": "규격 하한(80) 대비 여유가 줄어 등급 하락 → 평균·산포 중 원인 확인",
-    "NG율": "규격 미달(WU<80 또는 BU<50) 비율 증가 → 'NG 이력' 시트에서 Lot ID 확인",
+    "BU σ": "BU 산포(흩어짐) 증가",
+    "BU 평균": "BU 분포 전체가 이동",
+    "BU Cpk 등급": "BU 공정능력 등급 하락 (규격 하한 50 대비 여유 감소)",
+    "WU 평균": "WU 분포 전체가 이동",
+    "WU Cpk 등급": "WU 공정능력 등급 하락 (규격 하한 80 대비 여유 감소)",
+    "NG율": "규격 미달(WU<80 또는 BU<50) 비율 증가",
     "전체": "모델이 달라 비교하지 않음 (같은 모델끼리만 비교)",
 }
 
@@ -249,6 +225,16 @@ def _criteria(st) -> dict:
             "WU Cpk 등급": "한 단계 이상 하락",
             "NG율": f"+{st['ng_rate_increase']:g}%p 이상 증가",
             "전체": "—"}
+
+
+def _typ(model, st):
+    """모델 이름에 맞는 White Typ (설정 white_typ). 없으면 None (GCS 원 생략)"""
+    model = str(model or "")
+    typ = None
+    for key, v in st["white_typ"].items():
+        if key and key.upper() in model.upper():
+            typ = tuple(v)
+    return typ
 
 
 def _change_detection(stats, st):
@@ -288,7 +274,7 @@ def _change_detection(stats, st):
     return flags, n_hit
 
 
-def _change_sheet(wb, flags, st):
+def _change_sheet(wb, flags, st, invalid_msg=""):
     ws = wb.create_sheet("변화 감지", 1)
     ws.sheet_view.showGridLines = False
     for col, w in zip("ABCDEFGHIJ", (2, 13, 13, 13, 19, 10, 17, 13, 64, 2)):
@@ -296,9 +282,9 @@ def _change_sheet(wb, flags, st):
     _title(ws, "B2", "변화 감지 — 직전 이벤트 대비", "이벤트 요약 시트의 이벤트를 시간 순으로 놓고, 각 이벤트를 바로 앞 이벤트와 비교")
     guide = [("읽는 법", True),
              ("① 비교 방법  각 이벤트를 시간 순으로 바로 앞 이벤트와 비교합니다 (같은 모델끼리만, 모델이 다르면 비교 생략).", False),
-             ("② 결과  '⚠ 확인 필요' = 아래 경고 기준을 넘은 변화 → 원인 확인 권장 · '정상' = 기준 이내.  "
+             ("② 결과  '⚠ 확인 필요' = 경고 기준을 넘은 변화 · '정상' = 기준 이내.  "
               "※ 불량 판정이 아니라 '달라졌다'는 신호입니다.", False),
-             ("③ 의미 · 확인할 것  ⚠ 행에만 표시 — 무엇이 변했고 어디를 먼저 볼지.", False),
+             ("③ 내용  ⚠ 행에만 표시 — 어떤 변화인지.", False),
              ("④ Cpk 등급  양호 ≥ 1.67 · 적합 ≥ 1.33 · 주의 ≥ 1.00 · 부적합 < 1.00 (Cp·Cpk 같은 기준).  "
               "규격: WU 80~100 · BU 50~100", False)]
     fill = PatternFill("solid", fgColor="EFF6FF")
@@ -312,6 +298,15 @@ def _change_sheet(wb, flags, st):
             ws.cell(r, cc).fill = fill
         ws.row_dimensions[r].height = 20
     r = 10
+    if invalid_msg:                                  # v0.5: WU -100 제외 알람
+        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=9)
+        c = ws.cell(r, 2, invalid_msg)
+        c.font = Font(name=FONT, size=10, bold=True, color="991B1B")
+        c.alignment = Alignment(vertical="center", wrap_text=True, indent=1)
+        for cc in range(2, 10):
+            ws.cell(r, cc).fill = PatternFill("solid", fgColor="FEE2E2")
+        ws.row_dimensions[r].height = 22
+        r += 2
     if flags:
         ff = {}
         for i, f in enumerate(flags):
@@ -321,7 +316,7 @@ def _change_sheet(wb, flags, st):
             elif f[6] == "비교 생략":
                 ff[(i, 6)] = "E5E7EB"
         end = _table(ws, r, 2, ["이벤트", "비교 대상\n(직전 이벤트)", "항목", "변화 (직전 → 이번)", "변화량", "경고 기준",
-                               "결과", "의미 · 확인할 것"], flags, ff)
+                               "결과", "내용"], flags, ff)
         for rr in range(r + 1, end):
             ws.cell(rr, 9).alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
         ws.auto_filter.ref = f"B{r}:I{end - 1}"
@@ -329,20 +324,10 @@ def _change_sheet(wb, flags, st):
         r = end + 1
     else:
         ws.cell(r, 2, "비교할 이벤트가 2개 이상일 때 표시됩니다.").font = Font(name=FONT, size=9, color="6B7280")
-        r += 2
-    ws.cell(r, 2, "경고 기준 바꾸기").font = Font(name=FONT, size=11, bold=True, color="1E3A5F")
-    rows = [["BU σ 증가", f"{st['bu_sigma_increase_pct']:g} %", "bu_sigma_increase_pct"],
-            ["BU 평균 이동", f"{st['bu_mean_shift']:g}", "bu_mean_shift"],
-            ["WU 평균 이동", f"{st['wu_mean_shift']:g}", "wu_mean_shift"],
-            ["NG율 증가", f"{st['ng_rate_increase']:g} %p", "ng_rate_increase"]]
-    _table(ws, r + 1, 2, ["항목", "현재 기준", "설정 키 (BU_TREND_settings.json → report)"], rows)
-    ws.merge_cells(start_row=r + 1, start_column=4, end_row=r + 1, end_column=5)
-    for rr in range(r + 2, r + 2 + len(rows)):
-        ws.merge_cells(start_row=rr, start_column=4, end_row=rr, end_column=5)
 
 
 def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "White 휘도·CR", "White x/y"),
-             settings: dict | None = None, log=print, image_dir=None) -> str:
+             settings: dict | None = None, log=print) -> str:
     st = {**DEFAULT_SETTINGS, **(settings or {})}
     data, events = db.load(db_path)
     if data.empty:
@@ -358,11 +343,24 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
         raise ValueError("선택한 이벤트에 해당하는 데이터가 없습니다. 날짜를 이벤트로 묶었는지 확인하세요.")
     for c in ("WU", "BU", "White_LV", "Black_LV", "CR", "White_x", "White_y"):
         data[c] = pd.to_numeric(data[c], errors="coerce")
+    # v0.5: WU -100 = 측정 이상값 → 분석(Cp/Cpk·그림·변화 감지·NG)에서 제외, 요약·변화 감지에 알람, Raw에는 표시
+    bad = is_invalid_wu(data["WU"])
+    invalid = data[bad].sort_values("측정일시").drop_duplicates(subset=["이벤트", "LotID"], keep="last")
+    data = data[~bad]
     # 같은 이벤트 안 동일 LotID는 최신 측정 1건
     data = data.sort_values("측정일시").drop_duplicates(subset=["이벤트", "LotID"], keep="last")
+    n_invalid = invalid.groupby("이벤트").size().to_dict()
+    invalid_msg = ""
+    if len(invalid):
+        parts = ", ".join(f"{e} {n_invalid[e]}건" for e in selected if e in n_invalid)
+        invalid_msg = (f"⚠ WU -100(측정 이상값) {len(invalid)}건 제외 — {parts} · "
+                       "Cp/Cpk·그림·변화 감지·NG 이력에 넣지 않음 (Raw 시트 '분석 제외' 열에 표시)")
+        log(invalid_msg)
     ev_rows = {str(r["이벤트명"]): r for _, r in events.iterrows()}
     stats = [_event_stats(e, data[data["이벤트"] == e], ev_rows.get(e)) for e in selected if (data["이벤트"] == e).any()]
     labels = [s["name"] for s in stats]
+    for s_ in stats:
+        s_["n_invalid"] = int(n_invalid.get(s_["name"], 0))
     log(f"리포트 대상: {', '.join(labels)} (총 {len(data)}행)")
 
     wb = Workbook()
@@ -380,11 +378,11 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
     warn = [None] + [sum(1 for f in flags if f[0] == s["name"] and f[6].startswith("⚠")) for s in stats[1:]]
     board_rows = [{"name": s["name"], "period": s["period"], "n": len(s["g"]), "wu_cpk": s["cw"].cpk,
                    "bu_cpk": None if s["ld"] else s["cb"].cpk, "ng": s["ng"], "warn": w} for s, w in zip(stats, warn)]
-    h1 = _img(ws, CHARTS.summary_board(board_rows), "B5", 640)
+    h1 = _img(ws, CHARTS.summary_board(board_rows), "B5", 780)
     h2 = _img(ws, CHARTS.cpk_ng_combo(labels, [s["cw"].cpk for s in stats],
                                       [None if s["ld"] else s["cb"].cpk for s in stats], [s["ng"] for s in stats],
-                                      warn, "Cpk 추이 + NG율 (WU<80 또는 BU<50)"), "K5", 600)
-    top = 5 + max(h1, h2) + 1
+                                      warn, "Cpk 추이 + NG율 (WU<80 또는 BU<50)"), "L5", 570)
+    top = 5 + max(h1, h2)
     hdr = ["이벤트", "기간", "모델", "n", "WU 평균", "WU Cp", "WU Cpk", "BU 평균", "BU σ", "BU Cp", "BU Cpk",
            "W 휘도 평균", "CR 평균", "W x", "W y", "NG율", "메모"]
     rows, fills = [], {}
@@ -399,6 +397,15 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
     ws.cell(top, 2, "이벤트 요약").font = Font(name=FONT, size=11, bold=True, color="1E3A5F")
     r = _table(ws, top + 1, 2, hdr, rows, fills)
     ws.auto_filter.ref = f"B{top + 1}:R{r - 1}"
+    if invalid_msg:
+        c = ws.cell(r, 2, invalid_msg)
+        c.font = Font(name=FONT, size=10, bold=True, color="B91C1C")
+        for i, s_ in enumerate(stats):                 # 해당 이벤트의 n 칸에 표시
+            if s_["n_invalid"]:
+                cell = ws.cell(top + 2 + i, 5)
+                cell.value = f"{len(s_['g'])} (−{s_['n_invalid']})"
+                cell.fill = PatternFill("solid", fgColor="FEE2E2")
+        r += 1
     r += 1
     ws.cell(r, 2, "변화 감지").font = Font(name=FONT, size=11, bold=True, color="1E3A5F")
     if flags:
@@ -423,7 +430,7 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
             cell.fill = PatternFill("solid", fgColor="FFFBEB")
             cell.border = Border(left=_thin if cc == 2 else None, right=_thin if cc == 18 else None,
                                  top=_thin if rr == r + 1 else None, bottom=_thin if rr == r + 4 else None)
-    _change_sheet(wb, flags, st)
+    _change_sheet(wb, flags, st, invalid_msg)
 
     # ---- 2. 트렌드(거시)
     ws2 = wb.create_sheet("트렌드(거시)")
@@ -446,13 +453,13 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
     if "White x/y" in metrics:
         models = [str(s["model"]) for s in stats]
         model = max(set(models), key=models.count) if models else ""
-        typ = None
-        for key, v in st["white_typ"].items():
-            if key and key.upper() in model.upper():
-                typ = v
+        typ = _typ(model, st)
         title = "White 색좌표 평균 이동 (GCS 원 안이면 OK)" if typ else f"White 색좌표 평균 이동 (모델 '{model}' Typ 미설정 → 원 생략)"
         _img(ws2, CHARTS.white_xy(labels, [s["wx"] for s in stats], [s["wy"] for s in stats],
-                                  tuple(typ) if typ else None, st["gcs"], title), f"B{row}", 480)
+                                  typ, st["gcs"], title), f"B{row}", 480)
+        # v0.5: 실제 측정점이 있는 영역 확대 — 이벤트별 분포(점)·평균 ± 2σ 타원으로 영역 차이 비교
+        _img(ws2, CHARTS.white_xy_cloud({s["name"]: (s["g"]["White_x"], s["g"]["White_y"]) for s in stats}, typ, st["gcs"],
+                                        "White 색좌표 분포 확대 (점=측정 · 타원=평균±2σ)"), f"B{row + 22}", 480)
     if "White 휘도·CR" in metrics:
         _img(ws2, CHARTS.mean_band(labels, [s["lv"] for s in stats], [s["lv_sd"] for s in stats],
                                    "White 휘도 평균 ± 3σ", "cd/m²"), f"L{row}", 600)
@@ -499,6 +506,16 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
                                         s["memo"], "측정일별 Cp · Cpk", wu_cp=[x[2].cp for x in daily],
                                         bu_cp=None if s["ld"] else [x[3].cp for x in daily]), f"P{row}", 460, True)
         row += max(hs + [18])
+        if "White x/y" in metrics:                     # v0.5: 측정일별 색좌표 이동 (GCS 원 기준 + 확대)
+            typ = _typ(s["model"], st)
+            dx = [g.loc[g.d == d, "White_x"].mean() for d in days]
+            dy = [g.loc[g.d == d, "White_y"].mean() for d in days]
+            t1 = "측정일별 White 색좌표 이동 (GCS 원)" if typ else "측정일별 White 색좌표 이동 (Typ 미설정)"
+            hx = [_img(ws3, CHARTS.white_xy(days, dx, dy, typ, st["gcs"], t1, width=4.6, height=3.6), f"B{row}", 400, True),
+                  _img(ws3, CHARTS.white_xy_cloud({d: (g.loc[g.d == d, "White_x"], g.loc[g.d == d, "White_y"]) for d in days},
+                                                  typ, st["gcs"], "측정일별 색좌표 분포 확대 (점=측정 · 타원=평균±2σ)",
+                                                  width=4.6, height=3.6), f"I{row}", 400, True)]
+            row += max(hx) + 1
         k = st["daily_mean_dev_sigma"]
         trows, tf = [], {}
         for i, (d, n, cw, cb) in enumerate(daily):
@@ -520,29 +537,20 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
     ng_mask = (data["WU"] < SPECS["WU"][0]) | ((data["BU"] < SPECS["BU"][0]) & (data["LD"].astype(str) != "Y")) | \
               (data["판정"].astype(str).str.upper() == "NG")
     ng = data[ng_mask][["이벤트", "측정일", "LotID", "WU", "BU", "판정", "원본파일"]].sort_values(["이벤트", "측정일"])
-    # v0.4: Tool B 결과 폴더를 지정하면 Lot ID가 같은 BU/WU 이미지로 바로가기 (그림을 넣지 않고 경로만 → 용량 영향 없음)
-    idx = bu_image_index(image_dir, log) if image_dir else {}
-    ws4.append(list(ng.columns) + ["BU Image", "WU Image"])
-    n_link = 0
+    ws4.append(list(ng.columns))
     for rec in ng.itertuples(index=False):
         ws4.append([str(v) if isinstance(v, date) else v for v in rec])
-        hit = idx.get(db.normalize_lot_id(rec.LotID), {})
-        for col, kind in ((8, "BU"), (9, "WU")):
-            if kind in hit:
-                c = ws4.cell(ws4.max_row, col, "열기")
-                c.hyperlink = str(hit[kind])
-                c.font = Font(color="2563EB", underline="single")
-                n_link += 1
-    ws4.auto_filter.ref = f"A1:I{len(ng) + 1}"
-    for col, w in zip("ABCDEFGHI", (14, 12, 48, 9, 9, 8, 46, 10, 10)):
+    ws4.auto_filter.ref = f"A1:G{len(ng) + 1}"
+    for col, w in zip("ABCDEFG", (14, 12, 48, 9, 9, 8, 46)):
         ws4.column_dimensions[col].width = w
-    if image_dir:
-        log(f"NG 이력 이미지 링크: {n_link}개 (이미지 {len(idx)}개 Lot ID 중)")
 
     # ---- 5. Raw
     ws5 = wb.create_sheet("Raw")
     cols = ["이벤트", "매핑상태"] + [c for c in db.DATA_COLS if c in data.columns]
-    ws5.append(cols)
+    raw = pd.concat([data.assign(분석제외=""), invalid.assign(분석제외="WU -100")], ignore_index=True)
+    cols = cols[:2] + ["분석제외"] + cols[2:]
+    ws5.append([c if c != "분석제외" else "분석 제외" for c in cols])
+    data = raw
     for rec in data[cols].itertuples(index=False):
         ws5.append([None if (isinstance(v, float) and np.isnan(v)) else (str(v) if isinstance(v, date) else v) for v in rec])
     ws5.auto_filter.ref = f"A1:{ws5.cell(1, len(cols)).column_letter}{len(data) + 1}"

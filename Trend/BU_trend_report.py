@@ -1,7 +1,8 @@
-"""NEOVUE BU 트렌드 리포트 v0.4 — 측정일·이벤트 한 표 · 파일 끌어놓기/선택 → 이벤트 지정 · 트렌드 리포트
+"""NEOVUE BU 트렌드 리포트 v0.5 — 측정일·이벤트 한 표 · 파일 끌어놓기/선택 → 이벤트 지정 · 트렌드 리포트
 
 v0.3: NEOVUE 이름 · 리포트 '엑셀 열기'·'폴더 열기' 버튼 · 변화 감지 설명 보강 · 공용 화면 스타일
-v0.4: 리포트 시트 배치 개선 (요약 핵심 그림 · 미시 접기 · NG 이력 이미지 링크) · BU Image 폴더(선택)
+v0.4: 리포트 시트 배치 개선 (요약 핵심 그림 · 미시 접기)
+v0.5: WU -100 제외·알람 · 색좌표 확대 그림 · 측정일별 색좌표 이동 · 변화 감지 문구 정리
 
 v0.2 변경 (사용자 피드백)
 - 이벤트 관리 표와 업로드 표를 '측정일 · 이벤트' 한 표로 합침. 기간·날짜 입력 없음
@@ -369,7 +370,7 @@ class TrendApp:
         cols = ("모델", "건수", "출처", "파일 · 메모")
         wrap = ttk.Frame(self.c1, style="Card.TFrame")
         wrap.pack(fill="both", expand=True, pady=(10, 0))
-        self.tv = ttk.Treeview(wrap, columns=cols, show="tree headings", height=11, selectmode="extended")
+        self.tv = ttk.Treeview(wrap, columns=cols, show="tree headings", height=13, selectmode="extended")
         self.tv.heading("#0", text="이벤트 / 측정일")
         self.tv.column("#0", width=330, anchor="w")
         for c, w in zip(cols, (110, 80, 150, 390)):
@@ -399,18 +400,6 @@ class TrendApp:
         mb.grid(row=1, column=1, sticky="w", padx=(16, 0), pady=(8, 0))
         for i, m in enumerate(METRICS):
             ttk.Checkbutton(mb, text=m, variable=self.metric_vars[m]).grid(row=0, column=i, sticky="w", padx=(0, 18))
-        # v0.4: NG 이력 이미지 링크용 Tool B 결과 폴더 (선택)
-        ttk.Label(g, text="BU Image 폴더", style="Cap.TLabel").grid(row=2, column=0, sticky="w", pady=(8, 0))
-        ib = ttk.Frame(g, style="Card.TFrame")
-        ib.grid(row=2, column=1, sticky="ew", padx=(16, 0), pady=(8, 0))
-        g.columnconfigure(1, weight=1)
-        self.image_dir_var = tk.StringVar(value=self.settings.get("image_dir", ""))
-        ttk.Entry(ib, textvariable=self.image_dir_var).pack(side="left", fill="x", expand=True)
-        ttk.Button(ib, text="지우기", command=lambda: self._set_image_dir("")).pack(side="right", padx=(6, 0))
-        ttk.Button(ib, text="찾기", command=self.browse_image_dir).pack(side="right", padx=(6, 0))
-        ttk.Label(g, text="(선택) Tool B 결과가 있는 상위 폴더 → NG 이력 시트에 Lot ID별 BU/WU 이미지 '열기' 링크. "
-                          "그림을 넣지 않고 경로만 넣어 파일 크기는 그대로", style="Note.TLabel").grid(
-            row=3, column=1, sticky="w", padx=(16, 0), pady=(2, 0))
         self.btn_report = ttk.Button(c3, text="▶  트렌드 리포트 생성", style="Big.TButton", command=self.make_report)
         self.btn_report.pack(fill="x", pady=(12, 0))
         # v0.3: 만든 리포트 바로 열기
@@ -771,14 +760,12 @@ class TrendApp:
         if not out:
             return
         self.settings["report_dir"] = str(Path(out).parent)
-        self.settings["image_dir"] = self.image_dir_var.get().strip()
         self._save_settings()
         self.btn_report.config(state="disabled", text="리포트 만드는 중...")
 
         def work():
             try:
-                path = tr.generate(self.db_path, evs, out, mets, self.settings.get("report"), self.log,
-                                   image_dir=self.image_dir_var.get().strip() or None)
+                path = tr.generate(self.db_path, evs, out, mets, self.settings.get("report"), self.log)
                 self.root.after(0, self._report_done, path, None)
             except Exception as exc:
                 self.root.after(0, self._report_done, None, exc)
@@ -795,16 +782,6 @@ class TrendApp:
         self._update_recent()
         if messagebox.askyesno("완료", "트렌드 리포트를 만들었습니다. 지금 열까요?\n(나중에 '엑셀 열기' 버튼으로도 열 수 있어요)"):
             self.open_report()
-
-    def browse_image_dir(self):
-        p = filedialog.askdirectory(title="Tool B 결과(…_cropped_v1)가 있는 폴더", initialdir=self.image_dir_var.get() or None)
-        if p:
-            self._set_image_dir(p)
-
-    def _set_image_dir(self, p):
-        self.image_dir_var.set(p)
-        self.settings["image_dir"] = p
-        self._save_settings()
 
     # ---------------------------------------------------------------- 리포트 열기 (v0.3)
     def _last_report(self) -> Path | None:

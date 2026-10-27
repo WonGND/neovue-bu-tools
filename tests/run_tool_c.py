@@ -1,5 +1,5 @@
-"""트렌드 리포트 v0.4 로직 시험 (화면 없이)
-사용: python run_tool_c.py <Tool A 시험 출력 폴더(DB 포함)> <리포트 출력 폴더> [Tool B 시험 출력 폴더]
+"""트렌드 리포트 v0.5 로직 시험 (화면 없이)
+사용: python run_tool_c.py <Tool A 시험 출력 폴더(DB 포함)> <리포트 출력 폴더>
 1) 과거 파일(B, C) 추가 + 이벤트 지정 → 다시 추가해도 0건
 2) Tool A가 이미 쌓은 날짜의 통합정리 파일을 추가하며 이벤트 지정 → 새로 넣지 않고 미지정 행만 묶음
 3) 남은 미지정 날짜를 이벤트로 묶기 (G10은 LD 모델)
@@ -71,6 +71,13 @@ assert (data[db.LABEL] != "").all(), "모든 행이 이벤트에 속해야 함"
 print(events[["이벤트명", "모델", "시작일", "종료일", "메모", "구분"]].to_string(index=False))
 print(data.groupby(db.LABEL).size().to_string())
 
+# v0.5: 이벤트 C 3개 Lot ID의 WU를 -100(측정 이상값)으로 → 분석 제외 + 알람
+data, events = db.load(DB)
+c_idx = data.index[data[db.LABEL] == "이벤트 C"][:3]
+bad_lots = set(data.loc[c_idx, "LotID"])
+data.loc[c_idx, "WU"] = -100
+db.save(DB, data, events)
+
 # 4) 리포트
 out = tr.generate(DB, ["이벤트 A", "이벤트 B", "이벤트 C", "G10 확인"], OUT / "트렌드리포트_test.xlsx", log=print)
 wb = load_workbook(out)
@@ -81,19 +88,22 @@ for r in range(h + 1, h + 5):
     print([ws.cell(r, c).value for c in range(2, 13)])
 assert ws.cell(h + 1, 3).value == "2026-04-16 ~ 2026-04-21", "기간은 데이터에서 자동 계산"
 assert ws.cell(h + 4, 2).value == "G10 확인" and ws.cell(h + 4, 12).value == "N/A (LD)", "G10은 LD로 BU 제외"
-# 5) v0.3 변화 감지 시트
+# 5) 변화 감지 시트 (v0.5: '내용' 열, 경고 기준 바꾸기 표 없음, WU -100 알람)
 assert wb.sheetnames[:2] == ["이벤트 요약", "변화 감지"], wb.sheetnames
 wc = wb["변화 감지"]
-head = [wc.cell(10, c).value for c in range(2, 10)]
-assert head[-1] == "의미 · 확인할 것" and head[5] == "경고 기준", head
-rows = [[wc.cell(r, c).value for c in range(2, 10)] for r in range(11, 40) if wc.cell(r, 2).value]
+hr = next(r for r in range(1, 30) if wc.cell(r, 2).value == "이벤트")
+assert "WU -100" in str(wc.cell(10, 2).value) and "3건" in str(wc.cell(10, 2).value), wc.cell(10, 2).value
+head = [wc.cell(hr, c).value for c in range(2, 10)]
+assert head[-1] == "내용" and head[5] == "경고 기준", head
+assert not any(wc.cell(r, 2).value == "경고 기준 바꾸기" for r in range(1, 80)), "경고 기준 바꾸기 표 제외"
+rows = [[wc.cell(r, c).value for c in range(2, 10)] for r in range(hr + 1, hr + 40) if wc.cell(r, 2).value]
 hits = [r for r in rows if str(r[6]).startswith("⚠")]
-assert hits and all(r[7] for r in hits), "⚠ 행에는 의미·확인할 것이 있어야 함"
+assert hits and all(r[7] and "→" not in r[7] for r in hits), "⚠ 행 내용 (화살표 안내 없음)"
 assert all(r[1] for r in rows[:len(hits)]), "비교 대상(직전 이벤트) 표시"
 link = [ws.cell(r, 4) for r in range(h, h + 15) if ws.cell(r, 4).hyperlink]
 assert link and "확인 필요" in link[0].value and str(len(hits)) in link[0].value, "요약 시트에 건수 + 바로가기"
 print(f"변화 감지 시트 OK — 확인 필요 {len(hits)}건 / {len(rows)}행 · 요약: {link[0].value}")
-# 6) v0.4 배치: 요약 핵심 그림 2개 + 결론 메모 칸 · 미시 이벤트 접기 · NG 이력 이미지 링크
+# 6) 배치: 요약 핵심 그림 2개 + 결론 메모 칸 · 미시 이벤트 접기 (v0.4)
 assert len(ws._images) == 2, "요약 시트 핵심 그림 A·B"
 assert any("결론 메모" == ws.cell(r, 2).value for r in range(1, 60)), "결론 메모 칸"
 wm = wb["측정일별(미시)"]
@@ -101,18 +111,22 @@ levels = [r for r, d in wm.row_dimensions.items() if d.outlineLevel == 1]
 assert levels and all(type(im.anchor).__name__ == "TwoCellAnchor" for im in wm._images), "행 그룹 + 그림이 행과 같이 접힘"
 links = [c for c in wm[5] if c.hyperlink]
 assert len(links) == 4, "미시 바로가기 4개"
-B_OUT = Path(sys.argv[3]) if len(sys.argv) > 3 else None
-if B_OUT:
-    out2 = tr.generate(DB, ["이벤트 A", "이벤트 B", "이벤트 C", "G10 확인"], OUT / "트렌드리포트_링크.xlsx", log=print,
-                       image_dir=B_OUT)
-    wn = load_workbook(out2)["NG 이력"]
-    assert [wn.cell(1, c).value for c in (8, 9)] == ["BU Image", "WU Image"]
-    linked = [r for r in range(2, wn.max_row + 1) if wn.cell(r, 8).hyperlink]
-    assert linked, "Tool B 결과에 있는 Lot ID는 링크"
-    tgt = Path(wn.cell(linked[0], 8).hyperlink.target)
-    assert tgt.exists() and tgt.name.startswith(str(wn.cell(linked[0], 3).value)[:10]), tgt
-    s1, s2 = (OUT / "트렌드리포트_test.xlsx").stat().st_size, Path(out2).stat().st_size
-    print(f"NG 이미지 링크 {len(linked)}행 · 파일 크기 {s1/1024:.0f}KB → {s2/1024:.0f}KB")
-    assert s2 - s1 < 50 * 1024, "링크만 넣으므로 크기 차이 작음"
+# 7) v0.5: WU -100 제외 · 색좌표 확대 그림 · NG 이력 이미지 링크 없음
+alarm = [ws.cell(r, 2).value for r in range(h, h + 8) if "WU -100" in str(ws.cell(r, 2).value)]
+assert alarm and "이벤트 C 3건" in alarm[0], alarm
+c_row = next(r for r in range(h + 1, h + 5) if ws.cell(r, 2).value == "이벤트 C")
+assert "(−3)" in str(ws.cell(c_row, 5).value), ws.cell(c_row, 5).value
+wn = wb["NG 이력"]
+assert wn.max_column == 7 and not (set(str(wn.cell(r, 3).value) for r in range(2, wn.max_row + 1)) & bad_lots), "-100 행은 NG 아님"
+wr = wb["Raw"]
+col = [wr.cell(1, c).value for c in range(1, wr.max_column + 1)].index("분석 제외") + 1
+assert sum(wr.cell(r, col).value == "WU -100" for r in range(2, wr.max_row + 1)) == 3, "Raw에 제외 표시"
+d2, _ = db.load(DB)
+g = d2[(d2[db.LABEL] == "이벤트 C") & (d2["WU"] != -100)].sort_values("측정일시").drop_duplicates("LotID", keep="last")
+exp = round(float(g["WU"].mean()), 2)                  # 평균은 순서와 무관 → -100 빠졌는지 확인
+assert abs(ws.cell(c_row, 6).value - exp) < 0.006 and len(g) == 809, (ws.cell(c_row, 6).value, exp, len(g))
+assert len(wb["트렌드(거시)"]._images) == 8, "거시: 색좌표 전체 + 확대"
+assert len(wm._images) == 4 * 3 + 4 * 2 - 1, "미시: 이벤트마다 색좌표 이동 2장 (G10은 BU 없음)"
+print(f"WU -100 제외 OK — {alarm[0][:40]}… · 이벤트 C WU 평균 {exp} (n=809)")
 tr.generate(DB, ["이벤트 A", "이벤트 B", "이벤트 C"], OUT / "트렌드리포트_WINE.xlsx", log=print)
-print("트렌드 리포트 v0.4 시험 통과")
+print("트렌드 리포트 v0.5 시험 통과")

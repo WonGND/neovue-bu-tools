@@ -21,7 +21,7 @@ import history_db  # noqa: E402
 import ui_style as ui  # noqa: E402
 from capability import is_constant, summary_line  # noqa: E402
 
-VERSION = "v1.5.2"
+VERSION = "v1.5.3"
 APP_TITLE = f"NEOVUE_OneClick_정리_{VERSION}"
 
 # [설정] 시간 포맷 및 기본 양식 경로

@@ -9,7 +9,7 @@ from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 import charts
-from capability import SPECS, capability, grade
+from capability import SPECS, capability, grade, is_invalid_wu
 
 SHEET_NAME = "공정능력_BU_WU"
 FONT = "맑은 고딕"
@@ -61,6 +61,8 @@ def compute(df: pd.DataFrame, ld: bool) -> dict:
 def write_sheet(wb, df: pd.DataFrame, ld: bool, meta: dict) -> dict:
     """df 열: LotID, WU, BU, time(측정 시각, datetime). meta: model, source, version"""
     df = df.sort_values(["time", "LotID"], na_position="last").reset_index(drop=True)
+    n_bad = int(is_invalid_wu(df["WU"]).sum())          # WU -100(측정 이상값) 행은 계산·그림에서 제외
+    df = df[~is_invalid_wu(df["WU"])].reset_index(drop=True)
     caps = compute(df, ld)
     if SHEET_NAME in wb.sheetnames:
         del wb[SHEET_NAME]
@@ -74,6 +76,9 @@ def write_sheet(wb, df: pd.DataFrame, ld: bool, meta: dict) -> dict:
     ws["B3"] = (f"{meta.get('source', '')} · LotID별 최신 1건 기준 n={len(df)} · σ(군내)=이동범위/1.128 · "
                 f"{meta.get('version', '')} · {datetime.now():%Y-%m-%d %H:%M}")
     ws["B3"].font = Font(name=FONT, size=9, color="6B7280")
+    if n_bad:
+        ws["B4"] = f"⚠ WU -100(측정 이상값) {n_bad}건 제외 — Cp/Cpk·그림·층별표에 넣지 않음"
+        ws["B4"].font = Font(name=FONT, size=10, bold=True, color="B91C1C")
 
     header = ["항목", "n (사용/제외)", "평균", "σ 군내", "σ 전체", "LSL", "USL", "Cp", "Cpk", "Ppk",
               "판정 (Cpk)", "실측 NG", "정규 가정 예측 NG", "정규성", "비고"]
@@ -141,6 +146,8 @@ def write_compare_sheet(wb, full: pd.DataFrame, sub_mask, ld: bool, meta: dict) 
     full 열: LotID, WU, BU, time(측정 시각). sub_mask: full과 같은 길이의 True/False (이미지 정리본 LotID)
     meta: model, csv_files, version. 반환 {'WU': (전체, 정리본), 'BU': (전체, 정리본)}"""
     full = full.assign(_sub=list(sub_mask)).sort_values(["time", "LotID"], na_position="last").reset_index(drop=True)
+    n_bad = int(is_invalid_wu(full["WU"]).sum())        # WU -100(측정 이상값) 행은 계산·그림에서 제외
+    full = full[~is_invalid_wu(full["WU"])].reset_index(drop=True)
     sub = full[full["_sub"]]
     caps = {"WU": (capability(full["WU"], "WU", raw_count=len(full)), capability(sub["WU"], "WU", raw_count=len(sub))),
             "BU": (capability(full["BU"], "BU", ld=ld, raw_count=len(full)), capability(sub["BU"], "BU", ld=ld, raw_count=len(sub)))}
@@ -159,6 +166,9 @@ def write_compare_sheet(wb, full: pd.DataFrame, sub_mask, ld: bool, meta: dict) 
                 f"측정 CSV {meta.get('csv_files', '?')}개 · 측정 기간 {period or '—'} · σ(군내)=이동범위/1.128(측정 시각 순) · "
                 f"{meta.get('version', '')} · {datetime.now():%Y-%m-%d %H:%M}")
     ws["B3"].font = Font(name=FONT, size=9, color="6B7280")
+    if n_bad:
+        ws["B4"] = f"⚠ WU -100(측정 이상값) {n_bad}건 제외 — Cp/Cpk·그림에 넣지 않음"
+        ws["B4"].font = Font(name=FONT, size=10, bold=True, color="B91C1C")
 
     header = ["항목", "대상", "n (사용/제외)", "평균", "σ 군내", "σ 전체", "LSL", "USL", "Cp", "Cpk", "Ppk",
               "판정 (Cpk)", "실측 NG", "정규 가정 예측 NG", "정규성", "비고"]

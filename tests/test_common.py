@@ -122,4 +122,21 @@ path, msg2 = db.adopt_shared_db(path, legacy, merged)
 check(msg2 == "" and len(db.load(shared)[0]) == 2, "두 번째 실행은 다시 합치지 않음")
 custom = str(TMP / "my.xlsx")
 check(db.adopt_shared_db(custom, legacy, merged)[0] == custom, "직접 고른 DB 경로는 그대로")
+
+print("[5] WU -100(측정 이상값) 제외 — Tool A·B 공정능력 시트")
+import capability_sheet as cs  # noqa: E402
+from capability import is_invalid_wu  # noqa: E402
+rng = np.random.default_rng(1)
+dfx = pd.DataFrame({"LotID": [f"L{i:03d}" for i in range(60)], "WU": rng.normal(88, 2, 60), "BU": rng.normal(70, 5, 60),
+                    "time": pd.date_range("2026-10-01", periods=60, freq="min")})
+dfx.loc[[5, 17, 40], "WU"] = -100
+check(int(is_invalid_wu(dfx["WU"]).sum()) == 3, "-100 3건 감지")
+wbx = openpyxl.Workbook()
+capsx = cs.write_sheet(wbx, dfx, False, {"model": "TEST", "source": "t", "version": "Tool A test"})
+clean = dfx[dfx["WU"] != -100]
+check(capsx["WU"].n == 57 and abs(capsx["WU"].mean - clean["WU"].mean()) < 1e-9, "Tool A 시트: -100 행 빼고 계산 (n=57)")
+check("WU -100" in str(wbx[cs.SHEET_NAME]["B4"].value), "Tool A 시트: 제외 알림")
+wby = openpyxl.Workbook()
+capsy = cs.write_compare_sheet(wby, dfx, [i % 2 == 0 for i in range(60)], False, {"model": "TEST", "csv_files": 1, "version": "Tool B test"})
+check(capsy["WU"][0].n == 57 and "WU -100" in str(wby[cs.SHEET_NAME]["B4"].value), "Tool B 시트: -100 행 빼고 계산 + 알림")
 print(f"전체 {ok}건 통과")
