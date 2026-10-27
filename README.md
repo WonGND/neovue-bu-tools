@@ -62,6 +62,10 @@ cd ..\BU_LotID; python -m PyInstaller --noconfirm NEOVUE_BU_DATA_정리_v0.6.1.s
 - spec은 빌드 전에 공용 모듈(`common/`)과 필요한 패키지를 점검하고, 빠진 것이 있으면 설치 명령과 함께 멈춥니다.
 - `Build complete!`까지 나왔는데 `dist`가 비어 있으면 백신(V3 등)이 exe를 검역한 경우입니다.
 
+## 배포 zip
+
+`python scripts/make_release_zip.py <출력.zip>` — 한글 파일 이름(spec·양식·체크리스트)이 Windows에서 깨지지 않게 묶음
+
 ## 누적 DB
 
 - 위치: `문서\BU_Tools\BU_History_DB.xlsx` — Tool A와 트렌드 리포트가 exe 위치와 상관없이 같은 파일을 씀
