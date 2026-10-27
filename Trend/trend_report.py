@@ -277,7 +277,7 @@ def _change_detection(stats, st):
 def _change_sheet(wb, flags, st, invalid_msg=""):
     ws = wb.create_sheet("변화 감지", 1)
     ws.sheet_view.showGridLines = False
-    for col, w in zip("ABCDEFGHIJ", (2, 13, 13, 13, 19, 10, 17, 13, 64, 2)):
+    for col, w in zip("ABCDEFGHIJ", (2, 13, 13, 13, 19, 10, 17, 13, 44, 2)):
         ws.column_dimensions[col].width = w
     _title(ws, "B2", "변화 감지 — 직전 이벤트 대비", "이벤트 요약 시트의 이벤트를 시간 순으로 놓고, 각 이벤트를 바로 앞 이벤트와 비교")
     guide = [("읽는 법", True),
