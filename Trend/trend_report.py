@@ -30,7 +30,7 @@ import charts as CHARTS  # noqa: E402
 import history_db as db  # noqa: E402
 from capability import SPECS, capability, grade, is_constant, is_invalid_wu  # noqa: E402
 
-VERSION = "v0.5"
+VERSION = "v0.6"
 FONT = "맑은 고딕"
 DEFAULT_SETTINGS = {
     "bu_sigma_increase_pct": 20.0,      # 직전 이벤트 대비 BU σ 증가 경고(%)
@@ -327,8 +327,13 @@ def _change_sheet(wb, flags, st, invalid_msg=""):
 
 
 def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "White 휘도·CR", "White x/y"),
-             settings: dict | None = None, log=print) -> str:
+             settings: dict | None = None, log=print, progress=None) -> str:
+    """progress(퍼센트 0~100, 단계 글자) — 화면의 진행 표시용 (v0.6)"""
+    def step(pct, text):
+        if progress:
+            progress(pct, text)
     st = {**DEFAULT_SETTINGS, **(settings or {})}
+    step(2, "누적 DB 읽는 중")
     data, events = db.load(db_path)
     if data.empty:
         raise ValueError("누적 DB에 데이터가 없습니다.")
@@ -363,6 +368,7 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
         s_["n_invalid"] = int(n_invalid.get(s_["name"], 0))
     log(f"리포트 대상: {', '.join(labels)} (총 {len(data)}행)")
 
+    step(12, "이벤트 요약 · 변화 감지")
     wb = Workbook()
     # ---- 1. 이벤트 요약 + 변화 감지
     ws = wb.active
@@ -432,6 +438,7 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
                                  top=_thin if rr == r + 1 else None, bottom=_thin if rr == r + 4 else None)
     _change_sheet(wb, flags, st, invalid_msg)
 
+    step(28, "트렌드(거시) 그래프")
     # ---- 2. 트렌드(거시)
     ws2 = wb.create_sheet("트렌드(거시)")
     ws2.sheet_view.showGridLines = False
@@ -461,11 +468,12 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
         _img(ws2, CHARTS.white_xy_cloud({s["name"]: (s["g"]["White_x"], s["g"]["White_y"]) for s in stats}, typ, st["gcs"],
                                         "White 색좌표 분포 확대 (점=측정 · 타원=평균±2σ)"), f"B{row + 22}", 480)
     if "White 휘도·CR" in metrics:
-        _img(ws2, CHARTS.mean_band(labels, [s["lv"] for s in stats], [s["lv_sd"] for s in stats],
-                                   "White 휘도 평균 ± 3σ", "cd/m²"), f"L{row}", 600)
+        # v0.6: 휘도·CR도 BU/WU와 같은 박스플롯 (상자=사분위, 수염=1.5×IQR, 점=이상치)
+        _img(ws2, CHARTS.boxplot_groups({s["name"]: s["g"]["White_LV"] for s in stats}, "White 휘도", None,
+                                        "White 휘도 분포 (이벤트별)", unit="cd/m²"), f"L{row}", 600)
         row += 22
-        _img(ws2, CHARTS.mean_band(labels, [s["cr"] for s in stats], [s["cr_sd"] for s in stats],
-                                   "CR 평균 ± 3σ", "CR"), f"L{row}", 600)
+        _img(ws2, CHARTS.boxplot_groups({s["name"]: s["g"]["CR"] for s in stats}, "CR", None,
+                                        "CR 분포 (이벤트별)", unit=""), f"L{row}", 600)
 
     # ---- 3. 측정일별(미시)
     ws3 = wb.create_sheet("측정일별(미시)")
@@ -483,7 +491,8 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
         cc.font = Font(name=FONT, size=10, color="2563EB", underline="single")
         toc_cells.append(cc)
     row = 7
-    for s, toc in zip(stats, toc_cells):
+    for k_ev, (s, toc) in enumerate(zip(stats, toc_cells)):
+        step(45 + 40 * k_ev / max(1, len(stats)), f"측정일별(미시) — {s['name']} ({k_ev + 1}/{len(stats)})")
         g = s["g"].copy()
         g["d"] = pd.to_datetime(g["측정일"]).dt.strftime("%m-%d")
         ws3.cell(row, 2, f"■ {s['name']}  ({s['period']})" + (f"  메모: {s['memo']}" if s["memo"] else "")).font = \
@@ -532,6 +541,7 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
         ws3.row_dimensions.group(head_row + 1, row - 1, outline_level=1, hidden=False)
         row += 1
 
+    step(87, "NG 이력 · Raw")
     # ---- 4. NG 이력
     ws4 = wb.create_sheet("NG 이력")
     ng_mask = (data["WU"] < SPECS["WU"][0]) | ((data["BU"] < SPECS["BU"][0]) & (data["LD"].astype(str) != "Y")) | \
@@ -556,6 +566,8 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
     ws5.auto_filter.ref = f"A1:{ws5.cell(1, len(cols)).column_letter}{len(data) + 1}"
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    step(93, "엑셀 파일 저장 중")
     wb.save(out_path)
+    step(100, "완료")
     log(f"✅ 리포트 저장: {Path(out_path).name}")
     return str(out_path)

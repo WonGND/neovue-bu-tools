@@ -23,15 +23,16 @@ v0.6부터 `crop_report.xlsx`에 공정능력 시트 추가 (판정 = 그 실행
 - `NEOVUE_BU_DATA_정리_v0.6.2.spec` - PyInstaller spec
 - `neovue_bu_data.ico` - 세 툴 공용 아이콘 (exe·창 아이콘)
 
-### Trend (`Trend/`) — BU 트렌드 리포트 v0.5 (`NEOVUE_BU_TREND_리포트`)
+### Trend (`Trend/`) — BU 트렌드 리포트 v0.6 (`NEOVUE_BU_TREND_리포트`)
 측정일·이벤트 한 표, 통합정리 파일 끌어다 놓기/선택 → 이벤트만 입력, 이벤트별 트렌드 리포트(거시·미시).
 v0.3: 리포트 '엑셀 열기'·'폴더 열기' 버튼, '변화 감지' 시트(읽는 법·경고 기준·의미/확인할 것).
 v0.4: 이벤트 요약 핵심 그림(한눈 보드 · Cpk+NG율) · 결론 메모 칸, 미시 시트 이벤트별 접기.
 v0.5: WU -100(측정 이상값) 제외·알람, 색좌표 확대 그림, 측정일별 색좌표 이동, 변화 감지 '내용' 열.
+v0.6: 측정일을 끌어서 이벤트로 옮기기 · 되돌리기(Ctrl+Z) · 수정 즉시 반영(저장은 뒤에서) · 리포트 진행률 버튼 · 휘도/CR 박스플롯.
 
 - `BU_trend_report.py` - GUI
 - `trend_report.py` - 통합정리 파일 읽기·리포트 생성 로직
-- `NEOVUE_BU_TREND_리포트_v0.5.spec` - PyInstaller spec
+- `NEOVUE_BU_TREND_리포트_v0.6.spec` - PyInstaller spec
 
 ### 공용 모듈 (`common/`)
 `capability.py`(계산) · `capability_sheet.py`(공정능력 시트) · `charts.py`(그림) · `history_db.py`(누적 DB) · `ui_style.py`(공용 화면 스타일 · 아이콘 · 파일 열기)
@@ -54,7 +55,7 @@ python -m pip install pandas openpyxl numpy pillow matplotlib tkinterdnd2 pyinst
 
 ```powershell
 cd OneClick;  python -m PyInstaller --noconfirm NEOVUE_OneClick_정리_v1.5.3.spec
-cd ..\Trend;  python -m PyInstaller --noconfirm NEOVUE_BU_TREND_리포트_v0.5.spec
+cd ..\Trend;  python -m PyInstaller --noconfirm NEOVUE_BU_TREND_리포트_v0.6.spec
 cd ..\BU_LotID; python -m PyInstaller --noconfirm NEOVUE_BU_DATA_정리_v0.6.2.spec
 ```
 

@@ -1,8 +1,9 @@
-"""NEOVUE BU 트렌드 리포트 v0.5 — 측정일·이벤트 한 표 · 파일 끌어놓기/선택 → 이벤트 지정 · 트렌드 리포트
+"""NEOVUE BU 트렌드 리포트 v0.6 — 측정일·이벤트 한 표 · 파일 끌어놓기/선택 → 이벤트 지정 · 트렌드 리포트
 
 v0.3: NEOVUE 이름 · 리포트 '엑셀 열기'·'폴더 열기' 버튼 · 변화 감지 설명 보강 · 공용 화면 스타일
 v0.4: 리포트 시트 배치 개선 (요약 핵심 그림 · 미시 접기)
 v0.5: WU -100 제외·알람 · 색좌표 확대 그림 · 측정일별 색좌표 이동 · 변화 감지 문구 정리
+v0.6: 측정일을 끌어서 이벤트로 옮기기 · 되돌리기 · 이벤트 수정 즉시 반영(메모리, 저장은 뒤에서) · 리포트 진행률
 
 v0.2 변경 (사용자 피드백)
 - 이벤트 관리 표와 업로드 표를 '측정일 · 이벤트' 한 표로 합침. 기간·날짜 입력 없음
@@ -13,6 +14,7 @@ v0.2 변경 (사용자 피드백)
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import tkinter as tk
@@ -284,6 +286,129 @@ class RenameDialog(_Dialog):
         self.destroy()
 
 
+# ====================================================================== 뒤에서 저장 (v0.6)
+class DBSaver:
+    """이벤트 수정은 화면(메모리)에 바로 반영하고, 엑셀 DB 저장은 이 스레드가 뒤에서 한다.
+    여러 번 고치면 마지막 상태만 저장. on_done(오류 또는 None, 저장 후 파일 시각)은 저장 스레드에서 불림"""
+
+    def __init__(self, on_done):
+        self.on_done = on_done
+        self._cv = threading.Condition()
+        self._job = None
+        self._busy = False
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def save(self, path, data, events, backup=False):
+        with self._cv:
+            if self._job is not None and self._job[3]:
+                backup = True                     # 아직 못 한 백업 요청은 유지
+            self._job = (str(path), data.copy(), events.copy(), backup)
+            self._cv.notify_all()
+
+    def pending(self) -> bool:
+        with self._cv:
+            return self._job is not None or self._busy
+
+    def flush(self, timeout=None) -> bool:
+        with self._cv:
+            return self._cv.wait_for(lambda: self._job is None and not self._busy, timeout)
+
+    def _run(self):
+        while True:
+            with self._cv:
+                self._cv.wait_for(lambda: self._job is not None)
+                path, data, events, backup = self._job
+                self._job, self._busy = None, True
+            err, mtime = None, None
+            try:
+                if backup:
+                    db.backup(path)
+                db.save(path, data, events)
+                mtime = os.path.getmtime(path)
+            except Exception as exc:              # 엑셀에서 DB가 열려 있는 경우 등
+                err = exc
+            with self._cv:
+                self._busy = False
+                self._cv.notify_all()
+            self.on_done(err, mtime)
+
+
+class ProgressButton(tk.Canvas):
+    """누르면 리포트 생성, 만드는 동안 버튼이 왼쪽부터 채워지며 % · 단계 표시 (v0.6)"""
+
+    IDLE = "▶  트렌드 리포트 생성"
+
+    def __init__(self, master, command, font):
+        super().__init__(master, height=48, highlightthickness=0, bd=0, bg=T["card"], cursor="hand2")
+        self.command, self.font = command, font
+        self.state_ = "idle"
+        self.pct, self.shown, self.step = 0.0, 0.0, ""
+        self.hover = False
+        self.bind("<Configure>", lambda _e: self._draw())
+        self.bind("<Button-1>", self._click)
+        self.bind("<Enter>", lambda _e: self._hover(True))
+        self.bind("<Leave>", lambda _e: self._hover(False))
+
+    def _hover(self, on):
+        self.hover = on
+        self._draw()
+
+    def _click(self, _e):
+        if self.state_ == "idle":
+            self.command()
+
+    def _box(self, x0, x1, color):
+        h = int(self["height"])
+        self.create_rectangle(x0, 2, x1, h - 2, fill=color, outline=color)
+
+    def _draw(self):
+        self.delete("all")
+        w, h = max(self.winfo_width(), 10), int(self["height"])
+        if self.state_ == "idle":
+            self._box(0, w, "#1d4ed8" if self.hover else T["accent"])
+            self.create_text(w / 2, h / 2, text=self.IDLE, fill="white", font=(self.font, 12, "bold"))
+        elif self.state_ == "run":
+            self._box(0, w, "#dbeafe")
+            self._box(0, w * self.shown / 100, "#60a5fa")
+            self.create_text(w / 2, h / 2, text=f"리포트 만드는 중  {self.shown:.0f}%   ·   {self.step}",
+                             fill="#0b1220", font=(self.font, 11, "bold"))
+        else:
+            self._box(0, w, "#16a34a")
+            self.create_text(w / 2, h / 2, text="✓  리포트 완성", fill="white", font=(self.font, 12, "bold"))
+
+    def start(self):
+        self.state_, self.pct, self.shown, self.step = "run", 0.0, 0.0, "준비 중"
+        self.configure(cursor="watch")
+        self._tick()
+
+    def progress(self, pct, step):
+        self.pct, self.step = max(self.pct, float(pct)), step
+        self._draw()
+
+    def _tick(self):
+        if self.state_ != "run":
+            return
+        if self.shown < self.pct:                       # 단계 사이를 부드럽게 채움
+            self.shown = min(self.pct, self.shown + max(0.6, (self.pct - self.shown) * 0.25))
+        elif self.shown < min(self.pct + 6, 99):        # 오래 걸리는 단계에서도 멈춰 보이지 않게 조금씩
+            self.shown += 0.08
+        self._draw()
+        self.after(60, self._tick)
+
+    def finish(self, ok=True):
+        if ok:
+            self.state_, self.shown = "done", 100
+            self._draw()
+            self.after(1800, self.reset)
+        else:
+            self.reset()
+
+    def reset(self):
+        self.state_ = "idle"
+        self.configure(cursor="hand2")
+        self._draw()
+
+
 # ====================================================================== 메인 화면
 class TrendApp:
     def __init__(self, root: tk.Tk):
@@ -301,10 +426,16 @@ class TrendApp:
         self.busy = False
         self.data = pd.DataFrame(columns=db.DATA_COLS)
         self.events = pd.DataFrame(columns=db.EVENT_COLS)
+        self._disk_mtime = None            # 마지막으로 읽거나 저장한 DB 파일 시각 (Tool A가 바꿨는지 확인용)
+        self._unsaved = False              # 저장 실패해 메모리에만 있는 변경
+        self._undo: list[tuple] = []
+        self._drag = None
+        self.saver = DBSaver(lambda err, mtime: root.after(0, self._saved, err, mtime))
         self._style()
         self._build()
         self._enable_drop()
-        self.refresh()
+        self.refresh(reload=True)
+        root.protocol("WM_DELETE_WINDOW", self._on_close)
         if self._migrate_msg:
             root.after(300, lambda: messagebox.showinfo("누적 DB 위치", self._migrate_msg))
 
@@ -367,6 +498,8 @@ class TrendApp:
         for text, cmd in (("삭제", self.delete), ("묶음 풀기", self.ungroup), ("이름·메모", self.rename),
                           ("이벤트로 묶기", self.group), ("+ 파일 추가", self.add_files)):
             ttk.Button(t1, text=text, command=cmd).pack(side="right", padx=(6, 0))
+        self.btn_undo = ttk.Button(t1, text="↶ 되돌리기", command=self.undo, state="disabled")
+        self.btn_undo.pack(side="right", padx=(6, 12))
         cols = ("모델", "건수", "출처", "파일 · 메모")
         wrap = ttk.Frame(self.c1, style="Card.TFrame")
         wrap.pack(fill="both", expand=True, pady=(10, 0))
@@ -380,11 +513,16 @@ class TrendApp:
         self.tv.tag_configure("todo", background=T["warn"], foreground=T["warn_fg"], font=(self.font, 9, "bold"))
         self.tv.tag_configure("todo_row", background=T["todo_row"])
         self.tv.tag_configure("empty", foreground=T["sub"])
+        self.tv.tag_configure("drop", background="#bfdbfe", foreground="#1e3a8a", font=(self.font, 9, "bold"))
         sb = ttk.Scrollbar(wrap, orient="vertical", command=self.tv.yview)
         self.tv.configure(yscrollcommand=sb.set)
         self.tv.pack(side="left", fill="both", expand=True)
         sb.pack(side="left", fill="y")
         self.tv.bind("<Double-1>", self._on_double)
+        self.tv.bind("<ButtonPress-1>", self._drag_press)          # v0.6: 측정일을 끌어서 이벤트로 옮기기
+        self.tv.bind("<B1-Motion>", self._drag_motion)
+        self.tv.bind("<ButtonRelease-1>", self._drag_release)
+        self.root.bind("<Control-z>", lambda _e: self.undo())
         self.hint = ttk.Label(self.c1, text="", style="Note.TLabel")
         self.hint.pack(anchor="w", pady=(6, 0))
 
@@ -400,7 +538,7 @@ class TrendApp:
         mb.grid(row=1, column=1, sticky="w", padx=(16, 0), pady=(8, 0))
         for i, m in enumerate(METRICS):
             ttk.Checkbutton(mb, text=m, variable=self.metric_vars[m]).grid(row=0, column=i, sticky="w", padx=(0, 18))
-        self.btn_report = ttk.Button(c3, text="▶  트렌드 리포트 생성", style="Big.TButton", command=self.make_report)
+        self.btn_report = ProgressButton(c3, self.make_report, self.font)
         self.btn_report.pack(fill="x", pady=(12, 0))
         # v0.3: 만든 리포트 바로 열기
         rr = ttk.Frame(c3, style="Card.TFrame")
@@ -418,7 +556,7 @@ class TrendApp:
         ttk.Label(bar, textvariable=self.status, style="Status.TLabel").pack(side="left")
 
     def _hint_text(self):
-        tail = " · Tool A 실행분은 자동으로 ‘미지정’에 → 날짜를 골라(Ctrl·Shift) ‘이벤트로 묶기’"
+        tail = " · 측정일을 끌어서 이벤트(또는 미지정)에 놓으면 옮겨짐 · 실수하면 ‘되돌리기’(Ctrl+Z)"
         if DND_FILES:
             return "통합정리 엑셀 파일(또는 폴더)을 이 표로 끌어다 놓거나 ‘+ 파일 추가’ → 이벤트만 입력" + tail
         return "‘+ 파일 추가’로 통합정리 파일을 고르면 이벤트만 입력" + tail
@@ -448,7 +586,18 @@ class TrendApp:
         self.root.after(0, self.status.set, msg)
 
     # ---------------------------------------------------------------- 표
-    def refresh(self):
+    # ---------------------------------------------------------------- DB (v0.6: 처음 한 번 읽고 이후는 메모리)
+    def _file_mtime(self):
+        try:
+            return os.path.getmtime(self.db_path)
+        except OSError:
+            return None
+
+    def _external_change(self) -> bool:
+        """다른 프로그램(Tool A 등)이 DB 파일을 바꿨는지 — 내가 저장 중이면 비교하지 않음"""
+        return not self.saver.pending() and self._file_mtime() != self._disk_mtime
+
+    def _load_disk(self) -> bool:
         try:
             data, events = db.load(self.db_path)
             if len(events) and (events["구분"] != "묶음").any():          # v0.1 기간 이벤트 → 묶음으로 1회 전환
@@ -457,8 +606,72 @@ class TrendApp:
                 self.log(f"v0.1 기간 이벤트를 날짜 묶음으로 전환했습니다 ({n:,}행)")
         except db.DBLockedError as exc:
             messagebox.showerror("DB 오류", str(exc))
-            return
+            return False
         self.data, self.events = data, db.ensure_events(data, events)
+        self._disk_mtime = self._file_mtime()
+        self._unsaved = False
+        self._undo.clear()
+        self.btn_undo.config(state="disabled")
+        return True
+
+    def refresh(self, reload=False):
+        """reload=True 또는 DB 파일이 밖에서 바뀌었을 때만 파일을 다시 읽고, 아니면 메모리로 표를 그림"""
+        if (reload or (self._external_change() and not self._unsaved)) and not self._load_disk():
+            return
+        self._render()
+
+    def _apply(self, fn, done_msg, backup=False):
+        """fn(data, events) → (data, events): 메모리에서 바로 바꾸고 표를 다시 그린 뒤, 저장은 뒤에서"""
+        if self._external_change() and not self._unsaved:   # Tool A가 그사이 DB에 넣었으면 먼저 읽기
+            self._load_disk()
+        try:
+            data, events = fn(self.data, self.events)
+        except ValueError as exc:
+            messagebox.showwarning("확인", str(exc))
+            return
+        self._undo.append((self.data, self.events))
+        del self._undo[:-20]
+        self.btn_undo.config(state="normal")
+        self.data, self.events = data, db.ensure_events(data, events)
+        self._render()
+        self.saver.save(self.db_path, self.data, self.events, backup=backup)
+        self.log(done_msg + "  · 저장 중…")
+
+    def _saved(self, err, mtime):
+        if err:
+            self._unsaved = True
+            self.log("⚠ DB 저장 실패 — 화면 변경은 남아 있음 (DB를 엑셀에서 닫으면 다음 수정 때 함께 저장)")
+            messagebox.showerror("DB 저장 실패", f"{err}\n\n화면의 변경은 그대로 있습니다. DB 파일을 닫은 뒤 아무 수정이나 "
+                                 "하면(또는 되돌리기 후 다시) 함께 저장됩니다.")
+            return
+        if not self.saver.pending():
+            self._disk_mtime, self._unsaved = mtime, False
+            cur = self.status.get()
+            if cur.endswith("저장 중…"):
+                self.status.set(cur.replace("저장 중…", "저장됨"))
+
+    def undo(self):
+        if not self._undo or self.busy:
+            return
+        self.data, self.events = self._undo.pop()
+        self.btn_undo.config(state="normal" if self._undo else "disabled")
+        self._render()
+        self.saver.save(self.db_path, self.data, self.events)
+        self.log("되돌렸습니다  · 저장 중…")
+
+    def _on_close(self):
+        if self.saver.pending():
+            self.status.set("DB 저장 마무리 중…")
+            self.root.update_idletasks()
+            self.saver.flush(timeout=30)
+        if self._unsaved and not messagebox.askyesno(
+                "저장 안 된 변경", "DB 저장에 실패한 변경이 있습니다 (DB 파일이 열려 있었을 수 있음).\n그래도 닫을까요?"):
+            return
+        self.root.destroy()
+
+    # ---------------------------------------------------------------- 표
+    def _render(self):
+        data = self.data
         lab = data[db.LABEL].fillna("").astype(str).str.strip() if len(data) else pd.Series(dtype=str)
         n_un = int((lab == "").sum())
         self.db_label.config(text=f"DB: {self.db_path} (내 PC · {len(data):,}행 · 미지정 {n_un:,}행)")
@@ -532,10 +745,10 @@ class TrendApp:
     def _event_names(self) -> list[str]:
         return self.events.sort_values("시작일", ascending=False, na_position="last")["이벤트명"].astype(str).tolist()
 
-    def _selected_pairs(self):
+    def _selected_pairs(self, items=None):
         """선택한 날짜 행 → [(이벤트, key)], 그룹 행을 고르면 그 안의 날짜 전부"""
         pairs, rows = [], 0
-        for iid in self.tv.selection():
+        for iid in (self.tv.selection() if items is None else items):
             kids = [iid] if iid.startswith("D:") else list(self.tv.get_children(iid))
             for k in kids:
                 if k in self.day_rows and (self.day_rows[k][0], self.day_rows[k][1]) not in pairs:
@@ -551,6 +764,97 @@ class TrendApp:
             if iid.startswith("D:") and self.day_rows.get(iid, ("",))[0]:
                 return self.day_rows[iid][0]
         return None
+
+    # ---------------------------------------------------------------- 끌어서 옮기기 (v0.6)
+    def _drop_label(self, iid):
+        """놓을 곳 행 → 이벤트 이름 ('' = 미지정), 놓을 수 없으면 None"""
+        if not iid:
+            return None
+        if iid == "U":
+            return ""
+        if iid.startswith("E:"):
+            return iid[2:]
+        if iid in self.day_rows:
+            return self.day_rows[iid][0]
+        return None
+
+    def _drag_press(self, e):
+        self._drag = None
+        iid = self.tv.identify_row(e.y)
+        if not iid or self.tv.identify_region(e.x, e.y) not in ("tree", "cell") or self.busy:
+            return None
+        if e.state & 0x0005:                           # Shift·Ctrl = 여러 개 고르기 (기본 동작)
+            return None
+        if iid in self.tv.selection():                 # 이미 고른 행을 잡으면 선택을 유지한 채 끌기 준비
+            self._drag = {"x": e.x, "y": e.y, "items": self.tv.selection(), "moved": False, "click": iid}
+            return "break"
+        self._drag = {"x": e.x, "y": e.y, "items": None, "moved": False, "click": None}
+        return None
+
+    def _drag_motion(self, e):
+        d = self._drag
+        if not d:
+            return None
+        if not d["moved"]:
+            if abs(e.x - d["x"]) + abs(e.y - d["y"]) < 8:
+                return "break"
+            d["items"] = d["items"] or self.tv.selection()
+            d["pairs"], d["rows"] = self._selected_pairs(d["items"])
+            if not d["pairs"]:
+                self._drag = None
+                return None
+            d["moved"] = True
+            self.tv.configure(cursor="fleur")
+        h = self.tv.winfo_height()                     # 위·아래 끝에 가면 저절로 스크롤
+        if e.y < 18:
+            self.tv.yview_scroll(-1, "units")
+        elif e.y > h - 18:
+            self.tv.yview_scroll(1, "units")
+        target = self._drop_label(self.tv.identify_row(e.y))
+        self._mark_drop(target)
+        if target is None:
+            self.status.set(f"{len(d['pairs'])}일 · {d['rows']:,}건 — 이벤트 또는 미지정 위에 놓으세요")
+        else:
+            where = f"'{target}'" if target else UNASSIGNED
+            self.status.set(f"{len(d['pairs'])}일 · {d['rows']:,}건 → {where}(으)로 옮기기")
+        d["target"] = target
+        return "break"
+
+    def _mark_drop(self, target):
+        """놓을 이벤트 행을 파란색 + '⬇ 여기에 놓기'로 표시 (원래 모양은 기억했다가 되돌림)"""
+        gid = None if target is None else ("U" if target == "" else f"E:{target}")
+        old = getattr(self, "_marked", None)
+        if old and old[0] != gid and self.tv.exists(old[0]):
+            self.tv.item(old[0], tags=old[1], text=old[2])
+        if gid and (not old or old[0] != gid) and self.tv.exists(gid):
+            tags, text = self.tv.item(gid, "tags"), self.tv.item(gid, "text")
+            self.tv.item(gid, tags=("drop",), text="⬇ 여기에 놓기  ·  " + text)
+            self._marked = (gid, tags, text)
+        elif not gid:
+            self._marked = None
+
+    def _drag_release(self, e):
+        d, self._drag = self._drag, None
+        if not d:
+            return None
+        if not d["moved"]:
+            if d["click"]:                             # 고른 행을 그냥 클릭 = 그 행만 선택
+                self.tv.selection_set(d["click"])
+                self.tv.focus(d["click"])
+            return None
+        self.tv.configure(cursor="")
+        self._mark_drop(None)
+        target = d.get("target")
+        if target is None:
+            self.status.set("옮기기 취소")
+            return "break"
+        pairs = [p for p in d["pairs"] if p[0] != target]
+        if not pairs:
+            self.status.set("이미 그 이벤트에 있습니다")
+            return "break"
+        where = f"'{target}'" if target else UNASSIGNED
+        self._apply(lambda data, ev: db.set_label_df(data, ev, pairs, target)[:2], f"{len(pairs)}일을 {where}(으)로 옮겼습니다")
+        return "break"
 
     def _on_double(self, _e):
         if self._selected_event() and any(i.startswith("E:") for i in self.tv.selection()):
@@ -625,9 +929,13 @@ class TrendApp:
         self.busy = True
         self.log("DB에 적재 중...")
 
+        if self._external_change() and not self._unsaved:
+            self._load_disk()
+        base_data, base_events = self.data, self.events
+
         def work():
             try:
-                data, events = db.load(self.db_path)
+                data, events = base_data, base_events
                 total = {"added": 0, "skipped": 0, "relabeled": 0, "upgraded": 0}
                 for it in res["items"]:
                     rows = tr.rows_for_db(it["parsed"], it["date"], it["path"], label)
@@ -635,19 +943,22 @@ class TrendApp:
                     for k in total:
                         total[k] += st[k]
                 events = db.ensure_events(data, events, {label: memo} if (label and memo) else None)
-                db.save(self.db_path, data, events)
-                self.root.after(0, self._appended, len(res["items"]), label, total, None)
+                self.root.after(0, self._appended, len(res["items"]), label, total, None, (data, events))
             except Exception as exc:
-                self.root.after(0, self._appended, 0, label, None, exc)
+                self.root.after(0, self._appended, 0, label, None, exc, None)
         threading.Thread(target=work, daemon=True).start()
 
-    def _appended(self, n_files, label, total, exc):
+    def _appended(self, n_files, label, total, exc, new=None):
         self.busy = False
         if exc:
             messagebox.showerror("적재 오류", str(exc))
             self.log("적재 실패")
             return
-        self.refresh()
+        self._undo.append((self.data, self.events))
+        self.btn_undo.config(state="normal")
+        self.data, self.events = new
+        self._render()
+        self.saver.save(self.db_path, self.data, self.events)
         where = f"이벤트 '{label}'" if label else UNASSIGNED
         msg = f"{n_files}개 파일 → {where}\n새로 추가 {total['added']:,}건"
         if total["skipped"]:
@@ -677,7 +988,7 @@ class TrendApp:
         self.root.wait_window(d)
         if d.result:
             label, memo = d.result
-            self._db_call(lambda: db.set_label(self.db_path, pairs, label, memo), f"{len(pairs)}일을 '{label}'로 묶었습니다")
+            self._apply(lambda d_, e_: db.set_label_df(d_, e_, pairs, label, memo)[:2], f"{len(pairs)}일을 '{label}'로 묶었습니다")
 
     def ungroup(self):
         if not self._guard():
@@ -688,7 +999,7 @@ class TrendApp:
             messagebox.showinfo("묶음 풀기", "이벤트 안의 측정일(또는 이벤트)을 고르세요.")
             return
         if messagebox.askyesno("묶음 풀기", f"{len(pairs)}일 · {rows:,}건을 미지정으로 되돌릴까요? (데이터는 그대로)"):
-            self._db_call(lambda: db.set_label(self.db_path, pairs, ""), "미지정으로 되돌렸습니다")
+            self._apply(lambda d_, e_: db.set_label_df(d_, e_, pairs, "")[:2], "미지정으로 되돌렸습니다")
 
     def rename(self):
         if not self._guard():
@@ -702,7 +1013,7 @@ class TrendApp:
         self.root.wait_window(d)
         if d.result:
             new, memo = d.result
-            self._db_call(lambda: db.rename_event(self.db_path, name, new, memo), f"이벤트 '{new}' 저장")
+            self._apply(lambda d_, e_: db.rename_event_df(d_, e_, name, new, memo), f"이벤트 '{new}' 저장")
 
     def delete(self):
         if not self._guard():
@@ -714,17 +1025,17 @@ class TrendApp:
             pairs, rows = self._selected_pairs()
             if not rows:
                 if messagebox.askyesno("이벤트 삭제", f"데이터가 없는 이벤트 '{name}'를 목록에서 지울까요?"):
-                    self._db_call(lambda: db.delete_event(self.db_path, name), f"이벤트 '{name}' 삭제")
+                    self._apply(lambda d_, e_: db.delete_event_df(d_, e_, name), f"이벤트 '{name}' 삭제")
                 return
             ans = messagebox.askyesnocancel(
                 "이벤트 삭제", f"이벤트 '{name}' ({rows:,}건)\n\n예: 데이터까지 DB에서 삭제\n아니오: 이벤트만 지우고 데이터는 미지정으로")
             if ans is None:
                 return
             if ans:
-                self._db_call(lambda: (db.delete_rows(self.db_path, pairs), db.delete_event(self.db_path, name)),
-                              f"'{name}' 데이터 {rows:,}건 삭제 (백업: .backup.xlsx)")
+                self._apply(lambda d_, e_: db.delete_event_df(*db.delete_rows_df(d_, e_, pairs)[:2], name),
+                            f"'{name}' 데이터 {rows:,}건 삭제 (백업: .backup.xlsx)", backup=True)
             else:
-                self._db_call(lambda: db.delete_event(self.db_path, name), f"이벤트 '{name}' 삭제 · 데이터는 미지정으로")
+                self._apply(lambda d_, e_: db.delete_event_df(d_, e_, name), f"이벤트 '{name}' 삭제 · 데이터는 미지정으로")
             return
         pairs, rows = self._selected_pairs()
         if not pairs:
@@ -732,19 +1043,8 @@ class TrendApp:
             return
         if messagebox.askyesno("데이터 삭제", f"선택한 {len(pairs)}일 · {rows:,}건을 DB에서 삭제할까요?\n"
                                "(지우기 전 DB 옆에 .backup.xlsx 복사본을 남깁니다)", icon="warning"):
-            self._db_call(lambda: db.delete_rows(self.db_path, pairs), f"{rows:,}건 삭제 (백업: .backup.xlsx)")
-
-    def _db_call(self, fn, done_msg):
-        try:
-            fn()
-        except db.DBLockedError as exc:
-            messagebox.showerror("DB 오류", str(exc))
-            return
-        except ValueError as exc:
-            messagebox.showwarning("확인", str(exc))
-            return
-        self.refresh()
-        self.log(done_msg)
+            self._apply(lambda d_, e_: db.delete_rows_df(d_, e_, pairs)[:2], f"{rows:,}건 삭제 (백업: .backup.xlsx)",
+                        backup=True)
 
     # ---------------------------------------------------------------- 리포트
     def make_report(self):
@@ -761,18 +1061,24 @@ class TrendApp:
             return
         self.settings["report_dir"] = str(Path(out).parent)
         self._save_settings()
-        self.btn_report.config(state="disabled", text="리포트 만드는 중...")
+        self.btn_report.start()
+
+        def prog(pct, text):
+            self.root.after(0, self.btn_report.progress, pct, text)
 
         def work():
             try:
-                path = tr.generate(self.db_path, evs, out, mets, self.settings.get("report"), self.log)
+                if self.saver.pending():               # 방금 고친 이벤트가 파일에 저장된 뒤에 리포트
+                    prog(1, "이벤트 변경 저장 마무리 중")
+                    self.saver.flush(timeout=60)
+                path = tr.generate(self.db_path, evs, out, mets, self.settings.get("report"), self.log, progress=prog)
                 self.root.after(0, self._report_done, path, None)
             except Exception as exc:
                 self.root.after(0, self._report_done, None, exc)
         threading.Thread(target=work, daemon=True).start()
 
     def _report_done(self, path, exc):
-        self.btn_report.config(state="normal", text="▶  트렌드 리포트 생성")
+        self.btn_report.finish(ok=exc is None)
         if exc:
             messagebox.showerror("리포트 오류", str(exc))
             return
@@ -817,9 +1123,10 @@ class TrendApp:
                                          initialdir=str(Path(self.db_path).parent), initialfile=Path(self.db_path).name,
                                          confirmoverwrite=False, filetypes=[("Excel files", "*.xlsx")])
         if p:
+            self.saver.flush(timeout=30)
             self.settings["db_path"] = p
             self._save_settings()
-            self.refresh()
+            self.refresh(reload=True)
 
 
 def main():

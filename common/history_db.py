@@ -370,39 +370,71 @@ def _pair_mask(data: pd.DataFrame, pairs) -> pd.Series:
     return (data[LABEL].fillna("").astype(str).str.strip() + "||" + day_key(data)).isin(want)
 
 
-def set_label(path, pairs, label: str, memo: str | None = None) -> int:
-    """고른 날짜 행들의 이벤트를 label로 바꿈 (빈 문자열 = 묶음 풀기 → 미지정). 반환 바뀐 행 수"""
-    data, events = load(path)
+# ---- 메모리에서 바꾸는 함수 (트렌드 v0.6: 화면은 메모리 사본을 바로 고치고, 파일 저장은 뒤에서)
+def set_label_df(data, events, pairs, label: str, memo: str | None = None):
+    """고른 날짜 행들의 이벤트를 label로 (빈 문자열 = 미지정). 반환 (data, events, 바뀐 행 수)"""
+    data = data.copy()
     hit = _pair_mask(data, pairs)
     data.loc[hit, LABEL] = label
     events = ensure_events(data, events, {label: memo} if (label and memo) else None)
+    return data, events, int(hit.sum())
+
+
+def rename_event_df(data, events, old: str, new: str, memo: str):
+    if new != old and new in set(events["이벤트명"]):
+        raise ValueError(f"'{new}' 이벤트가 이미 있습니다.")
+    data, events = data.copy(), events.copy()
+    data.loc[data[LABEL].str.strip() == old, LABEL] = new
+    events.loc[events["이벤트명"] == old, ["이벤트명", "메모"]] = [new, memo]
+    return data, ensure_events(data, events)
+
+
+def delete_event_df(data, events, name: str):
+    """이벤트를 목록에서 지우고 그 행들은 미지정으로 (데이터는 남김)"""
+    data = data.copy()
+    data.loc[data[LABEL].str.strip() == name, LABEL] = ""
+    return data, events[events["이벤트명"] != name].reset_index(drop=True)
+
+
+def delete_rows_df(data, events, pairs):
+    hit = _pair_mask(data, pairs)
+    data = data[~hit].reset_index(drop=True)
+    return data, ensure_events(data, events), int(hit.sum())
+
+
+def backup(path) -> None:
+    """데이터 삭제 전 같은 폴더에 .backup.xlsx 복사본"""
+    p = Path(path)
+    if p.exists():
+        shutil.copy2(p, p.with_name(p.stem + ".backup.xlsx"))
+
+
+# ---- 파일을 바로 고치는 함수 (시험·Tool A용, 위 함수 + 읽기/저장)
+def set_label(path, pairs, label: str, memo: str | None = None) -> int:
+    """고른 날짜 행들의 이벤트를 label로 바꿈 (빈 문자열 = 묶음 풀기 → 미지정). 반환 바뀐 행 수"""
+    data, events = load(path)
+    data, events, n = set_label_df(data, events, pairs, label, memo)
     save(path, data, events)
-    return int(hit.sum())
+    return n
 
 
 def rename_event(path, old: str, new: str, memo: str) -> None:
     data, events = load(path)
-    if new != old and new in set(events["이벤트명"]):
-        raise ValueError(f"'{new}' 이벤트가 이미 있습니다.")
-    data.loc[data[LABEL].str.strip() == old, LABEL] = new
-    events.loc[events["이벤트명"] == old, ["이벤트명", "메모"]] = [new, memo]
-    save(path, data, ensure_events(data, events))
+    save(path, *rename_event_df(data, events, old, new, memo))
 
 
 def delete_event(path, name: str) -> None:
     """이벤트를 목록에서 지우고 그 행들은 미지정으로 (데이터는 남김)"""
     data, events = load(path)
-    data.loc[data[LABEL].str.strip() == name, LABEL] = ""
-    save(path, data, events[events["이벤트명"] != name])
+    save(path, *delete_event_df(data, events, name))
 
 
 def delete_rows(path, pairs) -> int:
     """고른 날짜 행의 데이터를 DB에서 삭제 (지우기 전 같은 폴더에 .backup.xlsx 복사본을 남김)"""
-    p = Path(path)
-    data, events = load(p)
-    hit = _pair_mask(data, pairs)
-    if hit.any():
-        shutil.copy2(p, p.with_name(p.stem + ".backup.xlsx"))
-        data = data[~hit].reset_index(drop=True)
-        save(p, data, ensure_events(data, events))
-    return int(hit.sum())
+    data, events = load(path)
+    if not _pair_mask(data, pairs).any():
+        return 0
+    backup(path)
+    data, events, n = delete_rows_df(data, events, pairs)
+    save(path, data, events)
+    return n

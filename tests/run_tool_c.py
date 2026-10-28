@@ -1,4 +1,4 @@
-"""트렌드 리포트 v0.5 로직 시험 (화면 없이)
+"""트렌드 리포트 v0.6 로직 시험 (화면 없이)
 사용: python run_tool_c.py <Tool A 시험 출력 폴더(DB 포함)> <리포트 출력 폴더>
 1) 과거 파일(B, C) 추가 + 이벤트 지정 → 다시 추가해도 0건
 2) Tool A가 이미 쌓은 날짜의 통합정리 파일을 추가하며 이벤트 지정 → 새로 넣지 않고 미지정 행만 묶음
@@ -128,5 +128,17 @@ assert abs(ws.cell(c_row, 6).value - exp) < 0.006 and len(g) == 809, (ws.cell(c_
 assert len(wb["트렌드(거시)"]._images) == 8, "거시: 색좌표 전체 + 확대"
 assert len(wm._images) == 4 * 3 + 4 * 2 - 1, "미시: 이벤트마다 색좌표 이동 2장 (G10은 BU 없음)"
 print(f"WU -100 제외 OK — {alarm[0][:40]}… · 이벤트 C WU 평균 {exp} (n=809)")
-tr.generate(DB, ["이벤트 A", "이벤트 B", "이벤트 C"], OUT / "트렌드리포트_WINE.xlsx", log=print)
-print("트렌드 리포트 v0.5 시험 통과")
+# 8) v0.6: 진행률 콜백 · 휘도/CR 박스플롯 · 메모리 수정 함수
+prog = []
+tr.generate(DB, ["이벤트 A", "이벤트 B", "이벤트 C"], OUT / "트렌드리포트_WINE.xlsx", log=print,
+            progress=lambda p_, t_: prog.append((p_, t_)))
+pcts = [x[0] for x in prog]
+assert pcts == sorted(pcts) and pcts[-1] == 100 and any("측정일별" in x[1] for x in prog), prog
+print(f"진행률 {len(prog)}단계: " + " → ".join(f"{p_:.0f}%" for p_ in pcts))
+d0, e0 = db.load(DB)
+key = sorted(set(db.day_key(d0[d0[db.LABEL] == "이벤트 B"])))[0]
+d1, e1, n = db.set_label_df(d0, e0, [("이벤트 B", key)], "이벤트 A")
+assert n > 0 and (d1[db.LABEL] == "이벤트 B").sum() == 0 and (d0[db.LABEL] == "이벤트 B").sum() == n, "메모리 수정은 원본을 안 바꿈"
+d2, e2 = db.rename_event_df(d1, e1, "이벤트 A", "이벤트 A2", "메모")
+assert "이벤트 A2" in set(e2["이벤트명"]) and (d2[db.LABEL] == "이벤트 A2").sum() == (d1[db.LABEL] == "이벤트 A").sum()
+print("트렌드 리포트 v0.6 시험 통과")

@@ -118,10 +118,11 @@ def hist_overlay(x_all, x_sub, name, lsl, usl, cap_all, cap_sub, width=5.6, heig
     return _png(fig)
 
 
-def boxplot_groups(groups: dict, name, lsl, title, width=6.0, height=3.4, highlight_last=True) -> bytes:
-    """그룹(이벤트·측정일)별 박스플롯 + LSL. groups = {라벨: 값 배열}"""
+def boxplot_groups(groups: dict, name, lsl, title, width=6.0, height=3.4, highlight_last=True, unit="%") -> bytes:
+    """그룹(이벤트·측정일)별 박스플롯 + LSL. groups = {라벨: 값 배열}. lsl=None이면 규격선 없음(휘도·CR)"""
     labels = list(groups)
     data = [np.asarray(groups[k], dtype=float) for k in labels]
+    data = [v[np.isfinite(v)] for v in data]
     fig, ax = plt.subplots(figsize=(width, height))
     bp = ax.boxplot(data, widths=0.5, patch_artist=True,
                     flierprops=dict(markersize=2, markerfacecolor=GREY, markeredgecolor=GREY))
@@ -130,10 +131,11 @@ def boxplot_groups(groups: dict, name, lsl, title, width=6.0, height=3.4, highli
         b.set(facecolor="#dbeafe" if last else "#e2e8f0", edgecolor=BLUE if last else SLATE)
     for m in bp["medians"]:
         m.set(color=INK, lw=1.4)
-    ax.axhline(lsl, color=RED, ls="--", lw=1)
-    ax.text(len(data) + 0.45, lsl, f"LSL {lsl:g}", color=RED, va="bottom", ha="right", fontsize=8)
+    if lsl is not None:
+        ax.axhline(lsl, color=RED, ls="--", lw=1)
+        ax.text(len(data) + 0.45, lsl, f"LSL {lsl:g}", color=RED, va="bottom", ha="right", fontsize=8)
     ax.set_xticks(range(1, len(labels) + 1), [f"{k}\nn={len(v)}" for k, v in zip(labels, data)])
-    ax.set_ylabel(f"{name} (%)")
+    ax.set_ylabel(f"{name} ({unit})" if unit else name)
     ax.set_title(title, loc="left", fontsize=10, fontweight="bold")
     return _png(fig)
 
