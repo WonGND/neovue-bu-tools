@@ -1,9 +1,10 @@
-"""NEOVUE BU 트렌드 리포트 v0.6 — 측정일·이벤트 한 표 · 파일 끌어놓기/선택 → 이벤트 지정 · 트렌드 리포트
+"""NEOVUE BU 트렌드 리포트 v0.7 — 측정일·이벤트 한 표 · 파일 끌어놓기/선택 → 이벤트 지정 · 트렌드 리포트
 
 v0.3: NEOVUE 이름 · 리포트 '엑셀 열기'·'폴더 열기' 버튼 · 변화 감지 설명 보강 · 공용 화면 스타일
 v0.4: 리포트 시트 배치 개선 (요약 핵심 그림 · 미시 접기)
 v0.5: WU -100 제외·알람 · 색좌표 확대 그림 · 측정일별 색좌표 이동 · 변화 감지 문구 정리
 v0.6: 측정일을 끌어서 이벤트로 옮기기 · 되돌리기 · 이벤트 수정 즉시 반영(메모리, 저장은 뒤에서) · 리포트 진행률
+v0.7: 노트북 화면 대응(스크롤) · 리포트 자동 저장 · 지표 선택 기억 · DB 표시 정리 · 사용법 · 쉬운 오류 문구
 
 v0.2 변경 (사용자 피드백)
 - 이벤트 관리 표와 업로드 표를 '측정일 · 이벤트' 한 표로 합침. 기간·날짜 입력 없음
@@ -333,80 +334,21 @@ class DBSaver:
             self.on_done(err, mtime)
 
 
-class ProgressButton(tk.Canvas):
-    """누르면 리포트 생성, 만드는 동안 버튼이 왼쪽부터 채워지며 % · 단계 표시 (v0.6)"""
-
-    IDLE = "▶  트렌드 리포트 생성"
-
-    def __init__(self, master, command, font):
-        super().__init__(master, height=48, highlightthickness=0, bd=0, bg=T["card"], cursor="hand2")
-        self.command, self.font = command, font
-        self.state_ = "idle"
-        self.pct, self.shown, self.step = 0.0, 0.0, ""
-        self.hover = False
-        self.bind("<Configure>", lambda _e: self._draw())
-        self.bind("<Button-1>", self._click)
-        self.bind("<Enter>", lambda _e: self._hover(True))
-        self.bind("<Leave>", lambda _e: self._hover(False))
-
-    def _hover(self, on):
-        self.hover = on
-        self._draw()
-
-    def _click(self, _e):
-        if self.state_ == "idle":
-            self.command()
-
-    def _box(self, x0, x1, color):
-        h = int(self["height"])
-        self.create_rectangle(x0, 2, x1, h - 2, fill=color, outline=color)
-
-    def _draw(self):
-        self.delete("all")
-        w, h = max(self.winfo_width(), 10), int(self["height"])
-        if self.state_ == "idle":
-            self._box(0, w, "#1d4ed8" if self.hover else T["accent"])
-            self.create_text(w / 2, h / 2, text=self.IDLE, fill="white", font=(self.font, 12, "bold"))
-        elif self.state_ == "run":
-            self._box(0, w, "#dbeafe")
-            self._box(0, w * self.shown / 100, "#60a5fa")
-            self.create_text(w / 2, h / 2, text=f"리포트 만드는 중  {self.shown:.0f}%   ·   {self.step}",
-                             fill="#0b1220", font=(self.font, 11, "bold"))
-        else:
-            self._box(0, w, "#16a34a")
-            self.create_text(w / 2, h / 2, text="✓  리포트 완성", fill="white", font=(self.font, 12, "bold"))
-
-    def start(self):
-        self.state_, self.pct, self.shown, self.step = "run", 0.0, 0.0, "준비 중"
-        self.configure(cursor="watch")
-        self._tick()
-
-    def progress(self, pct, step):
-        self.pct, self.step = max(self.pct, float(pct)), step
-        self._draw()
-
-    def _tick(self):
-        if self.state_ != "run":
-            return
-        if self.shown < self.pct:                       # 단계 사이를 부드럽게 채움
-            self.shown = min(self.pct, self.shown + max(0.6, (self.pct - self.shown) * 0.25))
-        elif self.shown < min(self.pct + 6, 99):        # 오래 걸리는 단계에서도 멈춰 보이지 않게 조금씩
-            self.shown += 0.08
-        self._draw()
-        self.after(60, self._tick)
-
-    def finish(self, ok=True):
-        if ok:
-            self.state_, self.shown = "done", 100
-            self._draw()
-            self.after(1800, self.reset)
-        else:
-            self.reset()
-
-    def reset(self):
-        self.state_ = "idle"
-        self.configure(cursor="hand2")
-        self._draw()
+HELP = [
+    ("이 툴이 하는 일", ["Tool A가 쌓은 누적 DB(또는 Daily data 통합정리 파일)를 이벤트별로 묶어",
+                     "이벤트 간 비교(거시) · 이벤트 안 측정일별 비교(미시) 트렌드 리포트 엑셀을 만듭니다."]),
+    ("순서", ["① 측정일 · 이벤트: Tool A로 정리한 날짜는 자동으로 '미지정'에 들어옴",
+            "   → 날짜를 끌어서 이벤트 위에 놓거나, 골라서 '이벤트로 묶기'",
+            "   → 예전 통합정리 파일은 표에 끌어다 놓거나 '+ 파일 추가' 후 이벤트 이름만 입력",
+            "② 비교할 이벤트·지표 체크 → '트렌드 리포트 생성' (저장 폴더에 바로 저장, 버튼에 진행률)",
+            "③ '엑셀 열기'로 확인"]),
+    ("리포트 시트", ["이벤트 요약: 최신 이벤트 한눈 보드 · Cpk 추이 · 결론 메모 칸",
+                  "변화 감지: 직전 이벤트 대비 경고 기준을 넘은 항목 (불량 판정이 아니라 '달라짐' 신호)",
+                  "트렌드(거시) · 측정일별(미시) · NG 이력 · Raw"]),
+    ("되돌리기 · 저장", ["실수로 옮기거나 지웠으면 '↶ 되돌리기'(Ctrl+Z, 최근 20번)",
+                     "수정은 바로 화면에 반영되고 DB 저장은 뒤에서 함 (아래 상태 줄에 '저장됨')",
+                     "DB 파일이 엑셀에서 열려 있으면 저장이 안 됨 → 엑셀을 닫으면 다음 수정 때 함께 저장"]),
+]
 
 
 # ====================================================================== 메인 화면
@@ -414,14 +356,15 @@ class TrendApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         root.title(f"{APP_TITLE} {AUTHOR}")
-        root.geometry("1120x900")
+        ui.fit_window(root, 1120, 900, 760, 560)          # v0.7: 노트북 화면에 맞춤
         ui.apply_icon(root)
         self.font = ui.font_family(root)
         root.app_font = self.font
         self.settings_path = app_base_dir() / SETTINGS_NAME
         self.settings = self._load_settings()
         self.event_vars: dict[str, tk.BooleanVar] = {}
-        self.metric_vars = {m: tk.BooleanVar(value=True) for m in METRICS}
+        saved = self.settings.get("metrics")                # v0.7: 지표 선택 기억
+        self.metric_vars = {m: tk.BooleanVar(value=(m in saved) if isinstance(saved, list) else True) for m in METRICS}
         self.status = tk.StringVar(value="대기 중")
         self.busy = False
         self.data = pd.DataFrame(columns=db.DATA_COLS)
@@ -441,7 +384,7 @@ class TrendApp:
 
     # ---------------------------------------------------------------- 설정
     def _load_settings(self):
-        s = {"db_path": "", "db_merged": [], "report_dir": str(app_base_dir()), "report": dict(tr.DEFAULT_SETTINGS)}
+        s = {"db_path": "", "db_merged": [], "report_dir": "", "report": dict(tr.DEFAULT_SETTINGS)}
         try:
             loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
             s.update({k: v for k, v in loaded.items() if k != "report"})
@@ -474,9 +417,9 @@ class TrendApp:
         st, _ = ui.setup_style(self.root)          # 공용 스타일 (Tool A · Tool B와 같은 색 · ✓ 체크박스)
         st.configure("Recent.TLabel", background=T["card"], foreground=T["text"], font=(self.font, 9, "bold"))
 
-    def _card(self, title, note=None):
+    def _card(self, title, note=None, expand=False):
         c = ttk.Frame(self.body, padding=12, style="Card.TFrame")
-        c.pack(fill="x", pady=(0, 10))
+        c.pack(fill="both" if expand else "x", expand=expand, pady=(0, 10))
         top = ttk.Frame(c, style="Card.TFrame")
         top.pack(fill="x")
         ttk.Label(top, text=title, style="Sec.TLabel").pack(side="left")
@@ -486,16 +429,27 @@ class TrendApp:
 
     def _build(self):
         hdr = ui.header(self.root, APP_TITLE, self.font)
+        ui.help_button(hdr, lambda: ui.show_help(self.root, APP_TITLE, HELP, app_base_dir()))
         ttk.Button(hdr, text="DB 변경", command=self.change_db).pack(side="right")
-        self.db_label = ttk.Label(hdr, text="", style="HeadInfo.TLabel")
+        self.db_label = ttk.Label(hdr, text="", style="HeadInfo.TLabel")   # v0.7: 파일 이름·행 수만, 전체 경로는 마우스 올리면
         self.db_label.pack(side="right", padx=(0, 10))
+        ui.tooltip(self.db_label, lambda: f"누적 DB 전체 경로\n{self.db_path}")
 
-        self.body = ttk.Frame(self.root, padding=(14, 8))
+        bar = ttk.Frame(self.root, padding=(18, 6), style="Header.TFrame")   # 상태 줄을 먼저 붙여 작은 화면에서도 보이게
+        bar.pack(fill="x", side="bottom")
+        ttk.Label(bar, textvariable=self.status, style="Status.TLabel").pack(side="left")
+
+        scroll = ui.ScrollFrame(self.root)
+        scroll.pack(fill="both", expand=True)
+        self.body = ttk.Frame(scroll.body, padding=(14, 8))
         self.body.pack(fill="both", expand=True)
 
         # ① 측정일 · 이벤트
-        self.c1, t1 = self._card("① 측정일 · 이벤트")
-        for text, cmd in (("삭제", self.delete), ("묶음 풀기", self.ungroup), ("이름·메모", self.rename),
+        self.c1, t1 = self._card("① 측정일 · 이벤트", expand=True)
+        st = ttk.Style(self.root)
+        st.configure("Danger.TButton", foreground="#b91c1c")
+        ttk.Button(t1, text="삭제", command=self.delete, style="Danger.TButton").pack(side="right", padx=(18, 0))
+        for text, cmd in (("묶음 풀기", self.ungroup), ("이름·메모", self.rename),
                           ("이벤트로 묶기", self.group), ("+ 파일 추가", self.add_files)):
             ttk.Button(t1, text=text, command=cmd).pack(side="right", padx=(6, 0))
         self.btn_undo = ttk.Button(t1, text="↶ 되돌리기", command=self.undo, state="disabled")
@@ -503,7 +457,7 @@ class TrendApp:
         cols = ("모델", "건수", "출처", "파일 · 메모")
         wrap = ttk.Frame(self.c1, style="Card.TFrame")
         wrap.pack(fill="both", expand=True, pady=(10, 0))
-        self.tv = ttk.Treeview(wrap, columns=cols, show="tree headings", height=13, selectmode="extended")
+        self.tv = ttk.Treeview(wrap, columns=cols, show="tree headings", height=9, selectmode="extended")
         self.tv.heading("#0", text="이벤트 / 측정일")
         self.tv.column("#0", width=330, anchor="w")
         for c, w in zip(cols, (110, 80, 150, 390)):
@@ -538,22 +492,22 @@ class TrendApp:
         mb.grid(row=1, column=1, sticky="w", padx=(16, 0), pady=(8, 0))
         for i, m in enumerate(METRICS):
             ttk.Checkbutton(mb, text=m, variable=self.metric_vars[m]).grid(row=0, column=i, sticky="w", padx=(0, 18))
-        self.btn_report = ProgressButton(c3, self.make_report, self.font)
+        self.btn_report = ui.ProgressButton(c3, self.make_report, self.font, idle="▶  트렌드 리포트 생성",
+                                            running="리포트 만드는 중", done="✓  리포트 완성")
         self.btn_report.pack(fill="x", pady=(12, 0))
         # v0.3: 만든 리포트 바로 열기
         rr = ttk.Frame(c3, style="Card.TFrame")
         rr.pack(fill="x", pady=(10, 0))
         self.recent_var = tk.StringVar()
         ttk.Label(rr, textvariable=self.recent_var, style="Recent.TLabel").pack(side="left")
+        ttk.Button(rr, text="저장 폴더 변경", command=self.choose_report_dir).pack(side="right", padx=(6, 0))
         self.btn_open_folder = ttk.Button(rr, text="폴더 열기", command=self.open_report_folder)
         self.btn_open_folder.pack(side="right", padx=(6, 0))
         self.btn_open_excel = ttk.Button(rr, text="엑셀 열기", command=self.open_report)
         self.btn_open_excel.pack(side="right")
+        self.dir_var = tk.StringVar()                       # v0.7: 리포트는 이 폴더에 자동 이름으로 바로 저장
+        ttk.Label(c3, textvariable=self.dir_var, style="Note.TLabel").pack(anchor="w", pady=(4, 0))
         self._update_recent()
-
-        bar = ttk.Frame(self.root, padding=(18, 6), style="Header.TFrame")
-        bar.pack(fill="x", side="bottom")
-        ttk.Label(bar, textvariable=self.status, style="Status.TLabel").pack(side="left")
 
     def _hint_text(self):
         tail = " · 측정일을 끌어서 이벤트(또는 미지정)에 놓으면 옮겨짐 · 실수하면 ‘되돌리기’(Ctrl+Z)"
@@ -674,7 +628,7 @@ class TrendApp:
         data = self.data
         lab = data[db.LABEL].fillna("").astype(str).str.strip() if len(data) else pd.Series(dtype=str)
         n_un = int((lab == "").sum())
-        self.db_label.config(text=f"DB: {self.db_path} (내 PC · {len(data):,}행 · 미지정 {n_un:,}행)")
+        self.db_label.config(text=f"DB: {Path(self.db_path).name} · {len(data):,}행 · 미지정 {n_un:,}행")
         prev = set(self.tv.get_children())
         opened = {iid for iid in prev if self.tv.item(iid, "open")}
         first = not hasattr(self, "_shown")
@@ -951,7 +905,7 @@ class TrendApp:
     def _appended(self, n_files, label, total, exc, new=None):
         self.busy = False
         if exc:
-            messagebox.showerror("적재 오류", str(exc))
+            messagebox.showerror("적재 오류", ui.friendly_error(exc))
             self.log("적재 실패")
             return
         self._undo.append((self.data, self.events))
@@ -1053,13 +1007,15 @@ class TrendApp:
         if not evs:
             messagebox.showinfo("리포트", "비교할 이벤트를 하나 이상 선택하세요.")
             return
-        out = filedialog.asksaveasfilename(title="리포트 저장", defaultextension=".xlsx",
-                                           initialdir=self.settings.get("report_dir"),
-                                           initialfile=f"트렌드리포트_{datetime.now():%Y%m%d_%H%M%S}.xlsx",
-                                           filetypes=[("Excel files", "*.xlsx")])
-        if not out:
+        # v0.7: 저장 창 없이 저장 폴더에 '트렌드리포트_날짜시각.xlsx'로 바로 저장 (폴더는 '저장 폴더 변경')
+        rdir = self._report_dir()
+        try:
+            rdir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            messagebox.showerror("리포트", ui.friendly_error(exc))
             return
-        self.settings["report_dir"] = str(Path(out).parent)
+        out = str(rdir / f"트렌드리포트_{datetime.now():%Y%m%d_%H%M%S}.xlsx")
+        self.settings["metrics"] = mets
         self._save_settings()
         self.btn_report.start()
 
@@ -1080,16 +1036,26 @@ class TrendApp:
     def _report_done(self, path, exc):
         self.btn_report.finish(ok=exc is None)
         if exc:
-            messagebox.showerror("리포트 오류", str(exc))
+            messagebox.showerror("리포트 오류", ui.friendly_error(exc))
             return
         self.log(f"리포트 저장: {Path(path).name}")
         self.settings["last_report"] = str(path)
         self._save_settings()
         self._update_recent()
-        if messagebox.askyesno("완료", "트렌드 리포트를 만들었습니다. 지금 열까요?\n(나중에 '엑셀 열기' 버튼으로도 열 수 있어요)"):
-            self.open_report()
+        # v0.7: 완료 팝업 없이 버튼 '✓ 리포트 완성' + '엑셀 열기' (세 툴 같은 방식)
 
     # ---------------------------------------------------------------- 리포트 열기 (v0.3)
+    def _report_dir(self) -> Path:
+        d = self.settings.get("report_dir") or ""
+        return Path(d) if d else db.documents_dir() / "BU_Tools" / "리포트"
+
+    def choose_report_dir(self):
+        p = filedialog.askdirectory(title="트렌드 리포트 저장 폴더", initialdir=str(self._report_dir()))
+        if p:
+            self.settings["report_dir"] = p
+            self._save_settings()
+            self._update_recent()
+
     def _last_report(self) -> Path | None:
         p = self.settings.get("last_report")
         return Path(p) if p and Path(p).exists() else None
@@ -1098,8 +1064,9 @@ class TrendApp:
         p = self._last_report()
         self.recent_var.set(f"최근 리포트: {p.name}" if p else "최근 리포트: 아직 없음")
         self.btn_open_excel.config(state="normal" if p else "disabled")
-        folder = p.parent if p else Path(self.settings.get("report_dir") or "")
-        self.btn_open_folder.config(state="normal" if str(folder) not in ("", ".") and folder.exists() else "disabled")
+        folder = p.parent if p else self._report_dir()
+        self.btn_open_folder.config(state="normal" if folder.exists() else "disabled")
+        self.dir_var.set(f"저장 폴더: {self._report_dir()}  (생성 버튼을 누르면 이 폴더에 바로 저장)")
 
     def open_report(self):
         p = self._last_report()
@@ -1110,11 +1077,11 @@ class TrendApp:
         try:
             ui.open_path(p)
         except OSError as exc:
-            messagebox.showerror("엑셀 열기", str(exc))
+            messagebox.showerror("엑셀 열기", ui.friendly_error(exc))
 
     def open_report_folder(self):
         p = self._last_report()
-        folder = p.parent if p else Path(self.settings.get("report_dir") or "")
+        folder = p.parent if p else self._report_dir()
         if folder.exists():
             ui.open_path(folder)
 

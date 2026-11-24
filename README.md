@@ -4,35 +4,36 @@ NEOVUE BU 설비 데이터 정리·분석 도구 모음. NEOVUE 표시는 창 �
 
 ## 포함 도구
 
-### OneClick (`OneClick/`) — Tool A v1.5.3 (`NEOVUE_OneClick_정리`)
+### OneClick (`OneClick/`) — Tool A v1.6 (`NEOVUE_OneClick_정리`)
 BU 설비 광학 데이터(CA410, LMK6)를 양식 Excel에 자동 정리하는 Tkinter GUI 도구.
 v1.5부터 BU/WU 공정능력(Cp/Cpk) 시트, LD 모델 자동 체크, 누적 DB 적재를 지원.
 v1.5.1부터 누적 DB 기본 위치가 `문서\BU_Tools\BU_History_DB.xlsx` (트렌드 리포트와 같은 파일).
 v1.5.2부터 화면 디자인을 Tool B·트렌드 리포트와 통일.
 
 - `One_click_정리.py` - 메인 Python 소스
-- `NEOVUE_OneClick_정리_v1.5.3.spec` - PyInstaller spec (이전 버전 spec은 git 기록에)
+- `NEOVUE_OneClick_정리_v1.6.spec` - PyInstaller spec (이전 버전 spec은 git 기록에)
 - `양식_Daily data_BU설비_광학데이터_날짜.xlsx` - 기본 양식 파일
 
-### BU_LotID (`BU_LotID/`) — Tool B v0.6.2 (`NEOVUE_BU_DATA_정리`)
+### BU_LotID (`BU_LotID/`) — Tool B v0.7 (`NEOVUE_BU_DATA_정리`)
 BU/WU 이미지 파일을 LotID 단위로 묶어 Excel로 정리하는 Tkinter GUI 도구.
 v0.6부터 `crop_report.xlsx`에 공정능력 시트 추가 (판정 = 그 실행에서 고른 측정 CSV 전체, 이미지 정리본 LotID는 참고로 표시).
 설정 화면에서 끌 수 있음. 결과 시트는 v0.5와 같음.
 
 - `BU_organize_gui_v05.py`, `BU_organize_one_click_v05.py` - 소스 (파일 이름은 v0.5 그대로)
-- `NEOVUE_BU_DATA_정리_v0.6.2.spec` - PyInstaller spec
+- `NEOVUE_BU_DATA_정리_v0.7.spec` - PyInstaller spec
 - `neovue_bu_data.ico` - 세 툴 공용 아이콘 (exe·창 아이콘)
 
-### Trend (`Trend/`) — BU 트렌드 리포트 v0.6 (`NEOVUE_BU_TREND_리포트`)
+### Trend (`Trend/`) — BU 트렌드 리포트 v0.7 (`NEOVUE_BU_TREND_리포트`)
 측정일·이벤트 한 표, 통합정리 파일 끌어다 놓기/선택 → 이벤트만 입력, 이벤트별 트렌드 리포트(거시·미시).
 v0.3: 리포트 '엑셀 열기'·'폴더 열기' 버튼, '변화 감지' 시트(읽는 법·경고 기준·의미/확인할 것).
 v0.4: 이벤트 요약 핵심 그림(한눈 보드 · Cpk+NG율) · 결론 메모 칸, 미시 시트 이벤트별 접기.
 v0.5: WU -100(측정 이상값) 제외·알람, 색좌표 확대 그림, 측정일별 색좌표 이동, 변화 감지 '내용' 열.
 v0.6: 측정일을 끌어서 이벤트로 옮기기 · 되돌리기(Ctrl+Z) · 수정 즉시 반영(저장은 뒤에서) · 리포트 진행률 버튼 · 휘도/CR 박스플롯.
+v0.7: 리포트 자동 저장(문서\BU_Tools\리포트) · 지표 선택 기억 · DB 표시 정리.
 
 - `BU_trend_report.py` - GUI
 - `trend_report.py` - 통합정리 파일 읽기·리포트 생성 로직
-- `NEOVUE_BU_TREND_리포트_v0.6.spec` - PyInstaller spec
+- `NEOVUE_BU_TREND_리포트_v0.7.spec` - PyInstaller spec
 
 ### 공용 모듈 (`common/`)
 `capability.py`(계산) · `capability_sheet.py`(공정능력 시트) · `charts.py`(그림) · `history_db.py`(누적 DB) · `ui_style.py`(공용 화면 스타일 · 아이콘 · 파일 열기)
@@ -54,15 +55,22 @@ python -m pip install pandas openpyxl numpy pillow matplotlib tkinterdnd2 pyinst
 `python -m PyInstaller`로 실행하면 패키지를 설치한 그 파이썬으로 빌드됩니다.
 
 ```powershell
-cd OneClick;  python -m PyInstaller --noconfirm NEOVUE_OneClick_정리_v1.5.3.spec
-cd ..\Trend;  python -m PyInstaller --noconfirm NEOVUE_BU_TREND_리포트_v0.6.spec
-cd ..\BU_LotID; python -m PyInstaller --noconfirm NEOVUE_BU_DATA_정리_v0.6.2.spec
+cd OneClick;  python -m PyInstaller --noconfirm NEOVUE_OneClick_정리_v1.6.spec
+cd ..\Trend;  python -m PyInstaller --noconfirm NEOVUE_BU_TREND_리포트_v0.7.spec
+cd ..\BU_LotID; python -m PyInstaller --noconfirm NEOVUE_BU_DATA_정리_v0.7.spec
 ```
 
 - 성공하면 마지막 줄에 `Build complete! The results are available in: <경로>`가 나오고, exe는 그 경로(명령을 실행한 폴더의 `dist`)에 생깁니다.
 - `build`·`dist`가 비어 있으면 빌드가 중간에 멈춘 것입니다. 창에 나온 `[빌드 중단]` 또는 `ERROR`/`Traceback` 줄이 원인입니다.
 - spec은 빌드 전에 공용 모듈(`common/`)과 필요한 패키지를 점검하고, 빠진 것이 있으면 설치 명령과 함께 멈춥니다.
 - `Build complete!`까지 나왔는데 `dist`가 비어 있으면 백신(V3 등)이 exe를 검역한 경우입니다.
+
+## 세 툴 공통 화면 (2026-11-24, Tool A v1.6 · Tool B v0.7 · 트렌드 v0.7)
+
+- 노트북(1366×768, 125% 배율) 화면에 맞춰 열리고, 넘치면 스크롤
+- 오류는 '무엇이 문제고 어떻게 하면 되는지'로 안내 (파일이 엑셀에서 열려 있음 → 닫고 다시 실행 등), 원문은 마지막 줄에
+- 머리글 '? 사용법' — 순서·칸 설명·자주 나는 문제. exe 옆에 이름에 'Manual'이 들어간 파일을 두면 거기서 바로 열림
+- 실행 버튼이 진행률로 채워지고 끝나면 초록 '완료' (완료 팝업 없음)
 
 ## 배포 zip
 

@@ -17,11 +17,37 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
 
+_COMMON = (Path(getattr(sys, "_MEIPASS", "")) if getattr(sys, "frozen", False)
+           else Path(__file__).resolve().parents[1] / "common")
+if str(_COMMON) not in sys.path:
+    sys.path.insert(0, str(_COMMON))
+import ui_style as ui  # noqa: E402  (v0.7: 창 크기 맞춤 · 쉬운 오류 · 사용법)
+
+# v0.7: 진행 로그 'xx 진행: 63/100 (63.0%)' → 단계별 비율로 진행 막대 채우기
+PROGRESS_RE = __import__("re").compile(r"(스캔|복사|CSV 스캔|크롭) 진행: (\d+)/(\d+)")
+PROGRESS_STAGES = {"스캔": (0, 15, "이미지 폴더 확인"), "복사": (15, 35, "최신 폴더 복사"),
+                   "CSV 스캔": (35, 50, "측정 CSV 읽기"), "크롭": (50, 92, "이미지 자르기")}
+HELP = [
+    ("이 툴이 하는 일", ["Lot ID 폴더별 BU/WU 이미지를 최신 것만 골라 배경을 잘라내고,",
+                     "측정 CSV의 BU/WU 값·판정과 함께 엑셀(crop_report.xlsx)로 정리합니다. 공정능력(Cp/Cpk) 시트도 같이 만듭니다."]),
+    ("순서", ["① 이미지 통합 폴더(Lot ID 폴더들이 있는 곳)와 측정 데이터 상위 폴더(LMK6 CSV가 있는 곳)를 고름",
+            "   → 고르면 바로 아래에 'Lot ID 폴더 n개 · 측정 CSV n개'가 표시되니 숫자가 맞는지 확인",
+            "② 파란 '실행' → 진행 막대와 단계(이미지 자르기 63/100 등) 표시",
+            "③ 끝나면 '엑셀 열기' 또는 '결과 폴더'"]),
+    ("숫자 칸", ["배경 제거 기준(기본 12): 이보다 어두운 픽셀을 배경(검정)으로 봄. 크게 하면 어두운 테두리까지 잘림",
+              "여백(기본 20px): 잘라낸 제품 둘레에 남기는 여백",
+              "대부분은 기본값 그대로 쓰면 됩니다. 기본값은 '설정'에서 바꿀 수 있음"]),
+    ("자주 나는 문제", ["'파일이 열려 있어 저장할 수 없습니다' → crop_report.xlsx를 엑셀에서 닫고 다시 실행",
+                   "Lot ID 폴더가 0개로 나오면 한 단계 위·아래 폴더를 골랐는지 확인",
+                   "WU -100(측정 이상값)은 Cp/Cpk에서 자동 제외되고 시트 4행에 표시"]),
+]
+
+
 def get_pipeline():
     from BU_organize_one_click_v05 import PipelineCancelled, run_pipeline
     return PipelineCancelled, run_pipeline
 
-APP_TITLE = "NEOVUE_BU_DATA_정리_v0.6.2"
+APP_TITLE = "NEOVUE_BU_DATA_정리_v0.7"
 AUTHOR_NAME = "(made by Kwakwonyong)"
 APP_NAME = f"{APP_TITLE} {AUTHOR_NAME}"
 ICON_FILENAME = "neovue_bu_data.ico"
@@ -110,8 +136,7 @@ class BUOrganizeApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title(APP_NAME)
-        self.root.geometry("1120x860")
-        self.root.minsize(980, 760)
+        ui.fit_window(self.root, 1120, 860, 760, 560)        # v0.7: 노트북 화면에 맞춤
         self._apply_icon()
         self.font_family = self._resolve_font_family()
 
@@ -135,7 +160,6 @@ class BUOrganizeApp:
         self.padding_var = tk.StringVar(value=str(self.settings.get("default_padding", 20)))
         self.status_var = tk.StringVar(value="대기 중")
         self.main_result_var = tk.StringVar(value="아직 생성되지 않음")
-        self.bu_result_var = tk.StringVar(value="별도 생성 없음")
         self.log_path_var = tk.StringVar(value=str(LOG_PATH))
         self.session_note_var = tk.StringVar(value="실행 대기")
         self.current_view = "main"
@@ -144,6 +168,7 @@ class BUOrganizeApp:
         self.nav_buttons: dict[str, ttk.Button] = {}
         self.view_frames: dict[str, ttk.Frame] = {}
         self.scroll_canvases: dict[str, tk.Canvas] = {}
+        self.scan_vars: dict[str, tk.StringVar] = {}
         self.status_badge = None
         self.status_note_label = None
         self.status_value_label = None
@@ -154,6 +179,7 @@ class BUOrganizeApp:
         self._build_ui()
         self._apply_global_fonts()
         self._apply_theme()
+        self.root.after(300, self._scan_all)
         self.root.bind_all("<MouseWheel>", self._on_mousewheel)
         self._poll_log_queue()
 
@@ -270,6 +296,8 @@ class BUOrganizeApp:
         self.header_status.grid(row=0, column=2, sticky="e", padx=(0, 8))
         self.settings_button = ttk.Button(self.header, text="설정", command=lambda: self._show_view("settings"))
         self.settings_button.grid(row=0, column=3, sticky="e")
+        ttk.Button(self.header, text="? 사용법",
+                   command=lambda: ui.show_help(self.root, APP_TITLE, HELP, get_app_base_dir())).grid(row=0, column=4, sticky="e", padx=(8, 0))
 
         self.content = ttk.Frame(self.root, padding=(14, 0, 14, 0))
         self.content.grid(row=1, column=0, sticky="nsew")
@@ -336,8 +364,9 @@ class BUOrganizeApp:
         source_card = self._make_card(self.main_view, "데이터 소스 설정", 0)
         self._add_source_block(source_card, 0, "이미지 통합 폴더", self.image_root_var, self._choose_image_root)
         self._add_source_block(source_card, 1, "측정 데이터 상위 폴더", self.data_root_var, self._choose_data_root)
-        self._add_spin_block(source_card, 2, "비검정 판정 임계값", "데이터 필터링 강도 설정", self.threshold_var, 1)
-        self._add_spin_block(source_card, 3, "크롭 패딩(px)", "이미지 추출 여유 공간", self.padding_var, 1)
+        self._add_spin_block(source_card, 2, "배경 제거 기준 (밝기 0~255)",
+                             "기본 12 · 이보다 어두우면 배경으로 보고 잘라냄 (크게 하면 어두운 테두리까지 잘림)", self.threshold_var, 1)
+        self._add_spin_block(source_card, 3, "자른 뒤 여백 (px)", "기본 20 · 제품 둘레에 남길 여백", self.padding_var, 1)
 
         status_card = self._make_card(self.main_view, "현재 상태", 1)
         status_row = ttk.Frame(status_card, style="Card.TFrame")
@@ -361,7 +390,7 @@ class BUOrganizeApp:
         self.stop_button = ttk.Button(status_row, text="■\n중지", style="BigStop.TButton", command=self.stop_run, state="disabled")
         self.stop_button.grid(row=0, column=2, sticky="nsew", padx=(8, 0))
         self.stop_button.configure(takefocus=False)
-        self.progress = ttk.Progressbar(status_card, mode="indeterminate")
+        self.progress = ttk.Progressbar(status_card, mode="determinate", maximum=100, value=0)
         self.progress.grid(row=1, column=0, sticky="ew", pady=(10, 0))
 
         result_card = self._make_card(self.main_view, "결과 파일", 2)
@@ -369,10 +398,8 @@ class BUOrganizeApp:
         file_grid.grid(row=0, column=0, sticky="ew")
         file_grid.columnconfigure(0, weight=1)
         file_grid.columnconfigure(1, weight=1)
-        ttk.Label(file_grid, text="메인 엑셀 파일", style="CardCaption.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 10))
-        ttk.Label(file_grid, text="추가 엑셀 파일", style="CardCaption.TLabel").grid(row=0, column=1, sticky="w")
-        ttk.Label(file_grid, textvariable=self.main_result_var, style="FileValue.TLabel").grid(row=1, column=0, sticky="w", pady=(5, 8), padx=(0, 10))
-        ttk.Label(file_grid, textvariable=self.bu_result_var, style="FileValue.TLabel").grid(row=1, column=1, sticky="w", pady=(5, 8))
+        ttk.Label(file_grid, text="결과 엑셀 (crop_report.xlsx · 공정능력 시트 포함)", style="CardCaption.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(file_grid, textvariable=self.main_result_var, style="FileValue.TLabel").grid(row=1, column=0, columnspan=2, sticky="w", pady=(5, 8))
         result_actions = ttk.Frame(result_card)
         result_actions.grid(row=1, column=0, sticky="ew")
         for idx in range(2):
@@ -491,6 +518,9 @@ class BUOrganizeApp:
         ttk.Entry(entry_row, textvariable=variable).grid(row=0, column=0, sticky="ew")
         ttk.Button(entry_row, text="찾아보기", command=command).grid(row=0, column=1, padx=(8, 0))
         ttk.Button(entry_row, text="열기", command=lambda v=variable: self._open_path(Path(v.get().strip()))).grid(row=0, column=2, padx=(6, 0))
+        info = tk.StringVar(value="")                      # v0.7: 고른 폴더 미리보기 (Lot ID 폴더·CSV 개수)
+        ttk.Label(block, textvariable=info, style="Subtle.TLabel").grid(row=2, column=0, sticky="w", pady=(4, 0))
+        self.scan_vars[title] = info
 
     def _add_spin_block(self, parent, row: int, title: str, desc: str, variable: tk.StringVar, step: int) -> None:
         block = ttk.Frame(parent, padding=(0, 10, 0, 0), style="Card.TFrame")
@@ -543,16 +573,72 @@ class BUOrganizeApp:
         variable.set(str(max(0, value)))
 
     def _choose_image_root(self) -> None:
-        path = filedialog.askdirectory(title="이미지 통합 폴더 선택")
+        path = filedialog.askdirectory(title="이미지 통합 폴더 선택", initialdir=self.image_root_var.get().strip() or None)
         if path:
             self.image_root_var.set(path)
             self._on_settings_changed(save_only=self.remember_paths_var.get())
+            self._scan("이미지 통합 폴더")
 
     def _choose_data_root(self) -> None:
-        path = filedialog.askdirectory(title="측정 데이터 상위 폴더 선택")
+        path = filedialog.askdirectory(title="측정 데이터 상위 폴더 선택", initialdir=self.data_root_var.get().strip() or None)
         if path:
             self.data_root_var.set(path)
             self._on_settings_changed(save_only=self.remember_paths_var.get())
+            self._scan("측정 데이터 상위 폴더")
+
+    # ---- v0.7: 폴더 미리보기 — 실행 전에 Lot ID 폴더·측정 CSV 개수를 보여 줘서 잘못 고른 폴더를 바로 알 수 있게
+    def _scan_all(self) -> None:
+        for title in self.scan_vars:
+            self._scan(title)
+
+    def _scan(self, title: str) -> None:
+        var = self.scan_vars.get(title)
+        raw = (self.image_root_var if title == "이미지 통합 폴더" else self.data_root_var).get().strip()
+        if var is None:
+            return
+        if not raw:
+            var.set("")
+            return
+        var.set("폴더 확인 중…")
+        threading.Thread(target=self._scan_worker, args=(title, Path(raw)), daemon=True).start()
+
+    def _scan_worker(self, title: str, root: Path) -> None:
+        if not root.is_dir():
+            msg = "⚠ 폴더가 없습니다 — 경로를 확인하세요"
+        elif title == "이미지 통합 폴더":
+            n_dir = n_img = 0
+            try:
+                for d in root.rglob("*"):
+                    if d.is_dir() and any(f.suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp") for f in d.iterdir()):
+                        n_dir += 1
+                    if n_dir > 5000:
+                        break
+                n_img = sum(1 for f in root.rglob("*") if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp"))
+            except OSError:
+                pass
+            msg = (f"✓ 이미지가 든 Lot ID 폴더 {n_dir:,}개 · 이미지 {n_img:,}장" if n_dir
+                   else "⚠ 이미지가 든 폴더가 없습니다 — 한 단계 위·아래 폴더인지 확인")
+        else:
+            try:
+                n_csv = sum(1 for f in root.rglob("*.csv") if "lmk" in f.name.lower())
+                n_all = sum(1 for _ in root.rglob("*.csv"))
+            except OSError:
+                n_csv = n_all = 0
+            msg = (f"✓ 측정 CSV(LMK6) {n_csv:,}개" + (f" · 다른 CSV {n_all - n_csv:,}개" if n_all > n_csv else "")
+                   if n_csv else ("⚠ LMK6 CSV가 없습니다" + (f" (CSV {n_all}개는 있음)" if n_all else "")
+                                  + " — 폴더를 확인하세요"))
+        self.root.after(0, self.scan_vars[title].set, msg)
+
+    # ---- v0.7: 진행 막대 (로그의 '진행: n/N'을 단계 비율로)
+    def _on_progress_line(self, line: str) -> None:
+        m = PROGRESS_RE.search(line)
+        if not m:
+            return
+        stage, cur, tot = m.group(1), int(m.group(2)), int(m.group(3))
+        lo, hi, name = PROGRESS_STAGES[stage]
+        pct = lo + (hi - lo) * cur / max(1, tot)
+        self.progress.configure(mode="determinate", maximum=100, value=pct)
+        self.session_note_var.set(f"{name} {cur:,}/{tot:,}  ·  {pct:.0f}%")
 
     def _show_view(self, name: str) -> None:
         self.current_view = name
@@ -596,7 +682,10 @@ class BUOrganizeApp:
         self.style.configure("TLabel", background=theme["card_bg"], foreground=theme["text"], font=self._font(10))
         self.style.configure("TFrame", background=theme["app_bg"])
         self.style.configure("TButton", font=self._font(9, "bold"), padding=6, anchor="center")
-        self.style.configure("BigAction.TButton", font=self._font(13, "bold"), padding=10, anchor="center", justify="center")
+        self.style.configure("BigAction.TButton", font=self._font(13, "bold"), padding=10, anchor="center", justify="center",
+                             background=theme["accent"], foreground="#ffffff")        # v0.7: 다른 툴처럼 파란 실행 버튼
+        self.style.map("BigAction.TButton", background=[("disabled", "#94a3b8"), ("active", "#1d4ed8")],
+                       foreground=[("disabled", "#ffffff")])
         self.style.configure("BigStop.TButton", font=self._font(13, "bold"), padding=10, anchor="center", justify="center")
         self.style.configure("MiniSpin.TButton", font=self._font(8, "bold"), padding=2)
         self.style.configure("TEntry", fieldbackground=theme["panel_bg"], foreground=theme["text"], font=self._font(10))
@@ -680,6 +769,7 @@ class BUOrganizeApp:
             except queue.Empty:
                 break
             self._append_log(message)
+            self._on_progress_line(message)
         self.root.after(120, self._poll_log_queue)
 
     def start_run(self) -> None:
@@ -710,11 +800,10 @@ class BUOrganizeApp:
         self.status_var.set("실행 중")
         self.session_note_var.set("작업이 진행 중입니다")
         self.main_result_var.set("작업이 진행 중입니다.")
-        self.bu_result_var.set("v0.5는 crop_report만 생성합니다.")
         self._refresh_status_display()
         self.run_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
-        self.progress.start(10)
+        self.progress.configure(mode="determinate", maximum=100, value=1)
         for widget in (self.preview_text, self.log_text):
             if widget is None:
                 continue
@@ -763,23 +852,21 @@ class BUOrganizeApp:
             writer.write(f"실행 오류: {exc}\n")
             writer.write("=" * 70 + "\n")
             writer.flush()
-            self.root.after(0, self._on_failure, str(exc))
+            self.root.after(0, self._on_failure, ui.friendly_error(exc))
 
     def _on_success(self, result: dict) -> None:
         self.latest_result = result
-        self.progress.stop()
+        self.progress.configure(value=100)
         self.run_button.configure(state="normal")
         self.stop_button.configure(state="disabled")
         self.status_var.set("완료")
         self.session_note_var.set("DATA 정리 완료")
         self.main_result_var.set(Path(result["excel_path"]).name if result.get("excel_path") else "생성됨")
-        self.bu_result_var.set("별도 생성 없음")
         self._refresh_status_display()
         self._append_log(
             f"\n완료: {result.get('excel_path', '')}\n"
         )
-        messagebox.showinfo("완료", "DATA 정리 완료!")
-        self._handle_auto_open()
+        self._handle_auto_open()        # v0.7: 완료 팝업 없이 상태·결과 파일 이름으로 알림
 
     def _handle_auto_open(self) -> None:
         if not self.latest_result or not self.latest_result.get("excel_path"):
@@ -794,25 +881,23 @@ class BUOrganizeApp:
             self._open_path(Path(self.latest_result["excel_path"]).parent)
 
     def _on_cancelled(self, message: str) -> None:
-        self.progress.stop()
+        self.progress.configure(value=0)
         self.run_button.configure(state="normal")
         self.stop_button.configure(state="disabled")
         self.status_var.set("중지됨")
         self.session_note_var.set("사용자 요청으로 중지")
         self.main_result_var.set("사용자 요청으로 작업이 중지되었습니다.")
-        self.bu_result_var.set("별도 생성 없음")
         self._refresh_status_display()
         self._append_log(f"\n중지: {message}\n")
         messagebox.showinfo("중지됨", message)
 
     def _on_failure(self, error_message: str) -> None:
-        self.progress.stop()
+        self.progress.configure(value=0)
         self.run_button.configure(state="normal")
         self.stop_button.configure(state="disabled")
         self.status_var.set("오류 발생")
         self.session_note_var.set("실행 중 오류 발생")
         self.main_result_var.set("오류로 인해 결과 파일이 생성되지 않았습니다.")
-        self.bu_result_var.set("별도 생성 없음")
         self._refresh_status_display()
         self._append_log(f"\n오류: {error_message}\n")
         messagebox.showerror("실행 오류", error_message)
@@ -830,7 +915,7 @@ class BUOrganizeApp:
         try:
             os.startfile(str(result_path))
         except OSError as exc:
-            messagebox.showerror("열기 실패", f"결과 파일을 열지 못했습니다.\n{exc}")
+            messagebox.showerror("열기 실패", ui.friendly_error(exc))
 
     def _open_path(self, path: Path) -> None:
         try:
@@ -838,14 +923,11 @@ class BUOrganizeApp:
                 return
             os.startfile(str(path))
         except OSError as exc:
-            messagebox.showerror("열기 실패", f"경로를 열지 못했습니다.\n{exc}")
+            messagebox.showerror("열기 실패", ui.friendly_error(exc))
 
     def _open_main_excel(self) -> None:
         if self.latest_result and self.latest_result.get("excel_path"):
             self._open_result(self.latest_result["excel_path"])
-
-    def _open_bu_excel(self) -> None:
-        messagebox.showinfo("안내", "v0.5에서는 crop_report.xlsx만 생성합니다.")
 
     def _open_result_folder(self) -> None:
         if self.latest_result and self.latest_result.get("excel_path"):

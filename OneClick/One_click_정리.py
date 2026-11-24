@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 import threading
 import tkinter as tk
@@ -21,11 +22,12 @@ import history_db  # noqa: E402
 import ui_style as ui  # noqa: E402
 from capability import is_constant, summary_line  # noqa: E402
 
-VERSION = "v1.5.3"
+VERSION = "v1.6"
 APP_TITLE = f"NEOVUE_OneClick_정리_{VERSION}"
 
 # [설정] 시간 포맷 및 기본 양식 경로
 TIME_FMT = "%Y.%m.%d %H:%M:%S"
+TEMPLATE_NAME = "양식_Daily data_BU설비_광학데이터_날짜.xlsx"   # v1.6: exe에 같이 묶고, exe 옆에 두면 그 파일을 우선
 DEFAULT_TEMPLATE_PATH = r"../../업무/00. 곽원용/01. PJT/2025/3. 12.9 inch_VDA129BLAC01/0. 양산 대응 폴더/Daily data 정리/양식_Daily data_BU설비_광학데이터_날짜.xlsx"
 SUPPORTED_TIME_FORMATS = (
     "%Y.%m.%d %H:%M:%S",
@@ -100,6 +102,48 @@ def clean_df(df):
     return df
 
 
+def sniff_kind(path) -> str | None:
+    """파일 열 이름으로 설비 종류 추정: 'CA410'(색좌표) / 'LMK6'(BU·WU) / None (v1.6: 칸을 바꿔 넣었는지 바로 알림)"""
+    try:
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".csv":
+            cols = None
+            for enc in ("utf-8-sig", "cp949"):
+                try:
+                    cols = pd.read_csv(path, nrows=0, encoding=enc).columns
+                    break
+                except UnicodeDecodeError:
+                    continue
+        else:
+            cols = pd.read_excel(path, nrows=0).columns
+    except Exception:
+        return None
+    cols = {str(c).strip() for c in (cols if cols is not None else [])}
+    if cols & {"White_Uniformity", "Black_Uniformity"}:
+        return "LMK6"
+    if cols & {"Red_X", "White_SX", "White_LV"}:
+        return "CA410"
+    return None
+
+
+def find_pair(path, want: str) -> str | None:
+    """CA410 파일을 고르면 같은 폴더에서 짝이 되는 LMK6 파일(또는 반대)을 찾음.
+    파일 이름의 날짜·접미사가 같은 것을 우선, 없으면 그 폴더에 하나뿐인 것"""
+    folder, name = os.path.split(path)
+    stem = os.path.splitext(name)[0]
+    key = re.sub(r"^(CA410|LMK6)[_\- ]*(DataLog)?[_\- ]*", "", stem, flags=re.I)
+    try:
+        cands = [os.path.join(folder, f) for f in sorted(os.listdir(folder))
+                 if f.lower().endswith((".csv", ".xlsx", ".xls")) and want.lower() in f.lower()]
+    except OSError:
+        return None
+    if key:
+        same = [c for c in cands if key.lower() in os.path.basename(c).lower()]
+        if len(same) == 1:
+            return same[0]
+    return cands[0] if len(cands) == 1 else None
+
+
 def detect_ld(lmk_path) -> bool:
     """LMK6 DataLog의 BU(Black_Uniformity)가 전부 같은 값이면 LD 모델로 판단 (D3 B안)."""
     if not lmk_path or not os.path.exists(lmk_path):
@@ -168,19 +212,25 @@ def _db_rows(df, cut_model, ld, ca_path, lmk_path):
     return rows
 
 
-def process(opts: dict, log=print) -> dict:
-    """opts: ca_path, lmk_path, template_path, save_dir, make_individual, make_cpk, ld, append_db, db_path"""
+def process(opts: dict, log=print, progress=None) -> dict:
+    """opts: ca_path, lmk_path, template_path, save_dir, make_individual, make_cpk, ld, append_db, db_path
+    progress(퍼센트, 단계 글자) — 화면 진행 표시용 (v1.6)"""
+    def step(pct, text):
+        if progress:
+            progress(pct, text)
     ca_path, lmk_path = opts.get("ca_path") or "", opts.get("lmk_path") or ""
     save_dir, temp_path = opts["save_dir"], opts.get("template_path") or ""
     ld = bool(opts.get("ld"))
     result = {"out_path": None, "caps": None, "db": None}
     df_ca = df_lmk = None
     if ca_path:
+        step(5, "CA410 정리")
         log("CA410 데이터 정리 중...")
         raw = read_df(ca_path)
         df_ca = clean_df(raw)
         log(f"   CA410 {len(raw)}건 → {len(df_ca)}건 (중복 {len(raw) - len(df_ca)}건 제거)")
     if lmk_path:
+        step(18, "LMK6 정리")
         log("LMK6 데이터 정리 중...")
         raw = read_df(lmk_path)
         df_lmk = clean_df(raw)
@@ -188,6 +238,7 @@ def process(opts: dict, log=print) -> dict:
 
     lmk_file = None
     if opts.get("make_individual"):
+        step(30, "개별 정리 파일")
         if df_ca is not None:
             log("CA410 개별 정리 파일(2개 시트) 생성 중...")
             res = save_individual_file(df_ca, "CA410", save_dir)
@@ -205,6 +256,7 @@ def process(opts: dict, log=print) -> dict:
             raise FileNotFoundError(f"양식 파일을 찾을 수 없습니다: {temp_path}")
         if "Panel_ID" not in df_ca.columns or "Panel_ID" not in df_lmk.columns:
             raise ValueError("CA410/LMK6 양쪽 모두 Panel_ID 컬럼이 필요합니다.")
+        step(45, "병합 · 양식 기입")
         log("데이터 병합 중...")
         lmk_subset = df_lmk[[c for c in ["Panel_ID", "Black_Uniformity", "White_Uniformity", "Judge", "Time_dt"]
                              if c in df_lmk.columns]].rename(columns={"Time_dt": "LMK_Time"})
@@ -223,6 +275,7 @@ def process(opts: dict, log=print) -> dict:
     # ---- v1.5: 공정능력 시트 (BU/WU, LMK6 데이터가 있을 때)
     base_df = merged if merged is not None else df_lmk
     if opts.get("make_cpk") and base_df is not None and "White_Uniformity" in base_df.columns:
+        step(60, "공정능력(Cp/Cpk) 계산")
         log(f"공정능력 계산 중... (LotID별 최신 1건, n = {len(base_df)}){' · LD 모델: BU 제외' if ld else ''}")
         model = " ".join(x for x in (cut_model, code) if x) or history_db.model_code(base_df["Panel_ID"].iloc[0])
         meta = {"model": model, "version": f"Tool A {VERSION}",
@@ -250,6 +303,7 @@ def process(opts: dict, log=print) -> dict:
                 target_wb.save(result["out_path"])
 
     if wb is not None:
+        step(82, "엑셀 저장")
         out_path = os.path.join(save_dir, f"Daily data 통합정리_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
         wb.save(out_path)
         result["out_path"] = out_path
@@ -259,6 +313,7 @@ def process(opts: dict, log=print) -> dict:
 
     # ---- v1.5: 누적 DB 적재 (트렌드 리포트용, 측정 시각 포함)
     if opts.get("append_db") and base_df is not None:
+        step(92, "누적 DB 적재")
         try:
             rows = _db_rows(base_df, cut_model, ld, ca_path, lmk_path)
             added, skipped = history_db.append(opts["db_path"], rows)
@@ -266,28 +321,42 @@ def process(opts: dict, log=print) -> dict:
             log(f"누적 DB 적재: {added}행 추가" + (f", 이미 있는 {skipped}행 건너뜀" if skipped else ""))
         except history_db.DBLockedError as exc:
             log(f"⚠ 누적 DB 적재 실패: {exc}")
+            result["db_error"] = str(exc)
+    step(100, "완료")
     return result
 
 
-# ---------------------------------------------------------------- 화면 (v1.5.2: Tool B·트렌드 리포트와 같은 디자인)
+# ---------------------------------------------------------------- 화면 (v1.6: 노트북 화면 대응 · 경로 기억 · 진행률)
 T = ui.T
+HELP = [
+    ("이 툴이 하는 일", ["CA410(색좌표)·LMK6(BU/WU) DataLog를 정리해 Daily data 양식에 채우고,",
+                     "공정능력(Cp/Cpk) 시트와 트렌드 리포트용 누적 DB까지 한 번에 만듭니다."]),
+    ("순서", ["① CA410 '찾기'로 파일 선택 → 같은 폴더에 짝이 되는 LMK6 파일이 있으면 자동으로 채워짐",
+            "② 저장 폴더 확인 (처음 한 번 고르면 다음부터 기억)",
+            "③ 파란 'One-Click 정리 시작' → 버튼이 채워지며 진행률 표시 → '결과 파일 열기'"]),
+    ("칸 설명", ["양식 파일: exe 옆에 양식 엑셀을 두면 그 파일을 쓰고, 없으면 exe에 들어 있는 기본 양식을 씀",
+              "LD 모델: BU 값이 전부 같으면 자동 체크 (BU Cp/Cpk 제외)",
+              "누적 DB: 문서\\BU_Tools\\BU_History_DB.xlsx — 트렌드 리포트가 같은 파일을 씀"]),
+    ("자주 나는 문제", ["'파일이 열려 있어 저장할 수 없습니다' → 결과 엑셀이나 누적 DB를 엑셀에서 닫고 다시 실행",
+                   "'LMK6 파일로 보입니다' 안내 → CA410·LMK6 칸이 바뀌지 않았는지 확인",
+                   "WU -100(측정 이상값) 행은 Cp/Cpk에서 자동 제외되고 시트 4행에 표시"]),
+]
 
 
 class OneClickApp:
     def __init__(self, root):
         self.root = root
         self.root.title(f"{APP_TITLE} {ui.AUTHOR}")
-        self.root.geometry("900x940")
-        self.root.minsize(760, 760)
+        ui.fit_window(root, 900, 900, 720, 560)
         ui.apply_icon(root)
         self.style, self.font = ui.setup_style(root)
 
         self.last_saved_file = None
         self.last_saved_folder = None
-        self.template_path = self.get_default_template_path()
         self._main_thread = threading.current_thread()
         self.settings_path = app_base_dir() / SETTINGS_NAME
         self.settings = self._load_settings()
+        self.template_path = self.find_template()
         self.status = tk.StringVar(value="대기 중")
 
         self.setup_ui()
@@ -297,9 +366,10 @@ class OneClickApp:
         self._save_settings()
         self.check_template()
 
-    # ---- 설정 저장 (각자 PC)
+    # ---- 설정 저장 (각자 PC) — v1.6: 마지막 폴더·양식·저장 폴더도 기억
     def _load_settings(self):
-        s = {"db_path": "", "db_merged": [], "make_cpk": True, "append_db": True}
+        s = {"db_path": "", "db_merged": [], "make_cpk": True, "append_db": True,
+             "make_individual": True, "last_input_dir": "", "save_dir": "", "template_path": ""}
         try:
             s.update(json.loads(self.settings_path.read_text(encoding="utf-8")))
         except (OSError, ValueError):
@@ -316,7 +386,8 @@ class OneClickApp:
 
     def _save_settings(self):
         self.settings.update({"db_path": self.ent_db.get().strip(), "make_cpk": self.var_cpk.get(),
-                              "append_db": self.var_db.get()})
+                              "append_db": self.var_db.get(), "make_individual": self.var_make_individual.get(),
+                              "save_dir": self.ent_save.get().strip(), "template_path": self.ent_temp.get().strip()})
         try:
             self.settings_path.write_text(json.dumps(self.settings, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError:
@@ -331,23 +402,29 @@ class OneClickApp:
 
     def setup_ui(self):
         hdr = ui.header(self.root, APP_TITLE, self.font)
-        ttk.Label(hdr, textvariable=self.status, style="HeadStatus.TLabel").pack(side="right")
+        ui.help_button(hdr, lambda: ui.show_help(self.root, APP_TITLE, HELP, app_base_dir()))
+        ttk.Label(hdr, textvariable=self.status, style="HeadStatus.TLabel").pack(side="right", padx=(0, 6))
 
-        body = ttk.Frame(self.root, padding=(14, 8))
+        scroll = ui.ScrollFrame(self.root)                 # v1.6: 화면이 작으면 스크롤
+        scroll.pack(fill="both", expand=True)
+        body = ttk.Frame(scroll.body, padding=(14, 8))
         body.pack(fill="both", expand=True)
 
         # ① 입력 파일
-        c1, _ = ui.card(body, "① 입력 파일", "CSV · Excel")
+        c1, _ = ui.card(body, "① 입력 파일", "CA410을 고르면 같은 폴더의 LMK6를 자동으로 찾아 채움")
         g = ttk.Frame(c1, style="Card.TFrame")
         g.pack(fill="x", pady=(8, 0))
         self.ent_ca = self._path_row(g, 0, "CA410 (색좌표)", "찾기", lambda: self.browse_file(self.ent_ca, "CA410"))
         self.ent_lmk = self._path_row(g, 1, "LMK6 (BU/WU)", "찾기", lambda: self.browse_file(self.ent_lmk, "LMK6"))
         self.ent_lmk.bind("<FocusOut>", lambda _e: self.update_ld_detection())
         self.ent_temp = self._path_row(g, 2, "양식 파일", "변경", self.browse_template)
-        self.ent_temp.insert(0, self.template_path if self.template_path else "")
+        self.ent_temp.insert(0, self.template_path or "")
         self.ent_save = self._path_row(g, 3, "저장 폴더", "찾기", self.browse_folder)
+        self.ent_save.insert(0, self.settings.get("save_dir", ""))
         g.columnconfigure(1, weight=1)
-        self.var_make_individual = tk.BooleanVar(value=True)
+        self.lbl_kind = tk.Label(c1, text="", fg=T["warn_fg"], bg=T["warn"], anchor="w", padx=8, pady=3,
+                                 font=(self.font, 9, "bold"))
+        self.var_make_individual = tk.BooleanVar(value=bool(self.settings.get("make_individual", True)))
         self.chk_individual = ttk.Checkbutton(c1, text="개별 정리 파일(Cleaned) 생성 (2개 시트 구성)",
                                               variable=self.var_make_individual)
         self.chk_individual.pack(anchor="w", pady=(8, 0))
@@ -374,8 +451,9 @@ class OneClickApp:
         ttk.Button(opt, text="변경", command=self.browse_db, width=7).grid(row=4, column=2, pady=(4, 0))
         opt.columnconfigure(1, weight=1)
 
-        # 실행 버튼
-        self.btn_run = ttk.Button(body, text="▶  One-Click 정리 시작", style="Big.TButton", command=self.start_process)
+        # 실행 버튼 (v1.6: 진행률이 버튼에 채워짐)
+        self.btn_run = ui.ProgressButton(body, self.start_process, self.font, idle="▶  One-Click 정리 시작",
+                                         running="정리 중", done="✓  정리 완료", bg=T["app"])
         self.btn_run.pack(fill="x", pady=(0, 10))
 
         # ③ 결과 · 처리 로그
@@ -388,7 +466,7 @@ class OneClickApp:
         ttk.Label(c3, textvariable=self.result_var, style="File.TLabel").pack(anchor="w", pady=(8, 6))
         wrap = ttk.Frame(c3, style="Panel.TFrame", padding=1)
         wrap.pack(fill="both", expand=True)
-        self.txt_log = scrolledtext.ScrolledText(wrap, height=12, state="disabled", font=("Consolas", 10),
+        self.txt_log = scrolledtext.ScrolledText(wrap, height=8, state="disabled", font=("Consolas", 10),
                                                  bg=T["log_bg"], fg=T["log_fg"], insertbackground=T["log_fg"],
                                                  relief="flat", borderwidth=8)
         self.txt_log.pack(fill="both", expand=True)
@@ -420,61 +498,94 @@ class OneClickApp:
         self.txt_log.see(tk.END)
         self.txt_log.config(state="disabled")
 
-    def _set_run_button(self, state, text=None):
-        self.btn_run.config(state=state, text=text if text is not None else self.btn_run.cget("text"))
-
     def _set_result_buttons(self, enabled: bool):
         state = "normal" if enabled else "disabled"
         self.btn_open_f.config(state=state)
         self.btn_open_d.config(state=state)
 
-    def get_default_template_path(self):
-        base = str(app_base_dir())
-        candidate = os.path.normpath(os.path.join(base, DEFAULT_TEMPLATE_PATH))
-        if os.path.exists(candidate):
-            return candidate
-        alt = os.path.normpath(os.path.join(os.path.dirname(base), DEFAULT_TEMPLATE_PATH))
-        if os.path.exists(alt):
-            return alt
-        return candidate
+    # ---- 양식 파일 (v1.6: 기억한 경로 → exe 옆 → 예전 기본 경로 → exe에 들어 있는 기본 양식)
+    def find_template(self):
+        base = app_base_dir()
+        cands = [self.settings.get("template_path") or "", str(base / TEMPLATE_NAME),
+                 os.path.normpath(os.path.join(str(base), DEFAULT_TEMPLATE_PATH)),
+                 os.path.normpath(os.path.join(os.path.dirname(str(base)), DEFAULT_TEMPLATE_PATH))]
+        if getattr(sys, "frozen", False):
+            cands.append(str(Path(getattr(sys, "_MEIPASS", "")) / TEMPLATE_NAME))
+        for c in cands:
+            if c and os.path.exists(c):
+                return c
+        return ""
 
     def check_template(self):
         path = self.ent_temp.get()
-        if os.path.exists(path):
-            self.log(f"양식 파일 감지됨: {os.path.basename(path)}")
-            if not self.ent_save.get():
-                self.ent_save.insert(0, os.path.dirname(path))
+        if path and os.path.exists(path):
+            inside = getattr(sys, "frozen", False) and str(Path(getattr(sys, "_MEIPASS", ""))) in path
+            self.log(f"양식 파일: {os.path.basename(path)}" + (" (exe에 들어 있는 기본 양식)" if inside else ""))
         else:
-            self.log("⚠ 기본 경로에 양식 파일이 없습니다. 직접 선택해 주세요.")
+            self.log("⚠ 양식 파일을 찾지 못했습니다. '변경'으로 양식 엑셀을 골라 주세요 (한 번 고르면 기억).")
+
+    def _initial_dir(self):
+        d = self.settings.get("last_input_dir") or ""
+        return d if d and os.path.isdir(d) else None
+
+    def _show_kind(self, text):
+        if text:
+            self.lbl_kind.config(text=text)
+            self.lbl_kind.pack(fill="x", pady=(6, 0), before=self.chk_individual)
+        else:
+            self.lbl_kind.pack_forget()
 
     def browse_file(self, entry, name):
-        p = filedialog.askopenfilename(title=f"{name} 파일 선택", filetypes=[("Data files", "*.csv *.xlsx *.xls")])
-        if p:
-            entry.delete(0, tk.END)
-            entry.insert(0, p)
-            if not self.ent_save.get():
-                self.ent_save.insert(0, os.path.dirname(p))
-            if entry is self.ent_lmk:
-                self.update_ld_detection()
+        p = filedialog.askopenfilename(title=f"{name} 파일 선택", initialdir=self._initial_dir(),
+                                       filetypes=[("Data files", "*.csv *.xlsx *.xls")])
+        if not p:
+            return
+        self._set(entry, p)
+        self.settings["last_input_dir"] = os.path.dirname(p)
+        if not self.ent_save.get():
+            self._set(self.ent_save, os.path.dirname(p))
+        # v1.6: 칸을 바꿔 넣었는지 바로 확인
+        kind = sniff_kind(p)
+        notes = []
+        if kind and kind != name:
+            notes.append(f"ⓘ 고른 파일은 {kind} 파일로 보입니다 ({name} 칸). 칸이 바뀌지 않았는지 확인하세요.")
+        # v1.6: 짝 파일 자동 채우기
+        other, other_entry = ("LMK6", self.ent_lmk) if name == "CA410" else ("CA410", self.ent_ca)
+        if not other_entry.get().strip():
+            pair = find_pair(p, other)
+            if pair and sniff_kind(pair) in (other, None):
+                self._set(other_entry, pair)
+                self.log(f"같은 폴더에서 {other} 파일을 찾아 채웠습니다: {os.path.basename(pair)}")
+        self._show_kind(" ".join(notes))
+        self._save_settings()
+        self.update_ld_detection()
+
+    @staticmethod
+    def _set(entry, value):
+        entry.delete(0, tk.END)
+        entry.insert(0, value)
 
     def browse_template(self):
-        p = filedialog.askopenfilename(title="양식 파일 선택", filetypes=[("Excel files", "*.xlsx")])
+        cur = self.ent_temp.get().strip()
+        p = filedialog.askopenfilename(title="양식 파일 선택", initialdir=os.path.dirname(cur) if cur else None,
+                                       filetypes=[("Excel files", "*.xlsx")])
         if p:
-            self.ent_temp.delete(0, tk.END)
-            self.ent_temp.insert(0, p)
+            self._set(self.ent_temp, p)
+            self._save_settings()
+            self.log(f"양식 파일 변경: {os.path.basename(p)} (다음 실행에도 기억)")
 
     def browse_folder(self):
-        p = filedialog.askdirectory(title="저장 폴더 선택")
+        p = filedialog.askdirectory(title="저장 폴더 선택", initialdir=self.ent_save.get().strip() or None)
         if p:
-            self.ent_save.delete(0, tk.END)
-            self.ent_save.insert(0, p)
+            self._set(self.ent_save, p)
+            self._save_settings()
 
     def browse_db(self):
         p = filedialog.asksaveasfilename(title="누적 DB 파일 위치", defaultextension=".xlsx",
                                          initialfile=DB_DEFAULT_NAME, filetypes=[("Excel files", "*.xlsx")])
         if p:
-            self.ent_db.delete(0, tk.END)
-            self.ent_db.insert(0, p)
+            self._set(self.ent_db, p)
+            self._save_settings()
 
     def start_process(self):
         # v1.5: 입력 검사를 화면 스레드에서 먼저 (v1.4.1의 '처리 중...' 버튼 고착 수정)
@@ -482,52 +593,74 @@ class OneClickApp:
         if not any([ca_path, lmk_path]):
             messagebox.showwarning("알림", "정리할 파일을 하나 이상 선택해 주세요.")
             return
-        if not self.ent_save.get().strip():
+        for label, path in (("CA410", ca_path), ("LMK6", lmk_path)):
+            if path and not os.path.exists(path):
+                messagebox.showwarning("알림", f"{label} 파일을 찾을 수 없습니다.\n{path}\n\n→ '찾기'로 다시 골라 주세요.")
+                return
+        save_dir = self.ent_save.get().strip()
+        if not save_dir:
             messagebox.showwarning("알림", "저장 폴더를 지정해 주세요.")
+            return
+        if not os.path.isdir(save_dir):
+            messagebox.showwarning("알림", f"저장 폴더가 없습니다.\n{save_dir}\n\n→ '찾기'로 다시 골라 주세요.")
+            return
+        if ca_path and lmk_path and not os.path.exists(self.ent_temp.get().strip()):
+            messagebox.showwarning("알림", "양식 파일을 찾을 수 없습니다.\n→ '변경'으로 양식 엑셀을 골라 주세요.")
             return
         if self.var_cpk.get() and lmk_path and not self.var_ld.get() and detect_ld(lmk_path):
             if messagebox.askyesno("LD 모델 확인", "BU 값이 모두 같습니다 (σ = 0).\nLD 모델(BU 미측정)로 보입니다.\n\nBU Cp/Cpk를 계산에서 제외할까요?"):
                 self.var_ld.set(True)
         self._save_settings()
         opts = {"ca_path": ca_path, "lmk_path": lmk_path, "template_path": self.ent_temp.get().strip(),
-                "save_dir": self.ent_save.get().strip(), "make_individual": self.var_make_individual.get(),
+                "save_dir": save_dir, "make_individual": self.var_make_individual.get(),
                 "make_cpk": self.var_cpk.get(), "ld": self.var_ld.get(),
                 "append_db": self.var_db.get(), "db_path": self.ent_db.get().strip()}
-        self.btn_run.config(state="disabled", text="처리 중...")
+        self.btn_run.start()
         self.status.set("처리 중")
         threading.Thread(target=self.run, args=(opts,), daemon=True).start()
 
     def run(self, opts):
         try:
-            result = process(opts, self.log)
+            result = process(opts, self.log, progress=lambda p, t: self.root.after(0, self.btn_run.progress, p, t))
             out_path = result.get("out_path")
             if out_path:
                 self.last_saved_file = out_path
                 self.last_saved_folder = opts["save_dir"]
-                self.root.after(0, self._done, out_path)
+                self.root.after(0, self._done, out_path, result.get("db_error"))
             else:
                 self.log("⚠ 작업은 완료되었으나 생성된 파일이 없습니다 (옵션 확인).")
-                self.root.after(0, self.status.set, "완료 (생성 파일 없음)")
+                self.root.after(0, self._finish, False, "완료 (생성 파일 없음)")
         except Exception as e:
-            self.log(f"❌ 에러: {str(e)}")
-            self.root.after(0, self.status.set, "오류")
-            self.root.after(0, messagebox.showerror, "오류", f"처리 중 에러 발생:\n{str(e)}")
-        finally:
-            self.root.after(0, self._set_run_button, "normal", "▶  One-Click 정리 시작")
+            self.log(f"❌ 에러: {e}")
+            self.root.after(0, self._finish, False, "오류")
+            self.root.after(0, messagebox.showerror, "오류", ui.friendly_error(e))
 
-    def _done(self, out_path):
+    def _finish(self, ok, status):
+        self.btn_run.finish(ok)
+        self.status.set(status)
+
+    def _done(self, out_path, db_error=None):
+        # v1.6: 완료 팝업 대신 버튼 '✓ 정리 완료' + 결과 파일 이름 표시 (DB 적재 실패만 알림)
         self._set_result_buttons(True)
         self.result_var.set(f"결과 파일: {os.path.basename(out_path)}")
-        self.status.set("완료")
-        messagebox.showinfo("성공", "데이터 정리가 완료되었습니다.")
+        self._finish(True, "완료")
+        if db_error:
+            messagebox.showwarning("누적 DB", "정리 파일은 만들었지만 누적 DB에는 넣지 못했습니다.\n\n" + db_error
+                                   + "\n\n→ DB 파일을 엑셀에서 닫고 같은 파일로 다시 실행하면 DB에만 추가됩니다 (중복은 자동 제외).")
 
     def open_last_file(self):
         if self.last_saved_file:
-            ui.open_path(self.last_saved_file)
+            self._open(self.last_saved_file)
 
     def open_last_folder(self):
         if self.last_saved_folder:
-            ui.open_path(self.last_saved_folder)
+            self._open(self.last_saved_folder)
+
+    def _open(self, path):
+        try:
+            ui.open_path(path)
+        except OSError as exc:
+            messagebox.showerror("열기 실패", ui.friendly_error(exc))
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""트렌드 리포트 v0.6 로직 시험 (화면 없이)
+"""트렌드 리포트 v0.7 로직 시험 (화면 없이)
 사용: python run_tool_c.py <Tool A 시험 출력 폴더(DB 포함)> <리포트 출력 폴더>
 1) 과거 파일(B, C) 추가 + 이벤트 지정 → 다시 추가해도 0건
 2) Tool A가 이미 쌓은 날짜의 통합정리 파일을 추가하며 이벤트 지정 → 새로 넣지 않고 미지정 행만 묶음
@@ -141,4 +141,4 @@ d1, e1, n = db.set_label_df(d0, e0, [("이벤트 B", key)], "이벤트 A")
 assert n > 0 and (d1[db.LABEL] == "이벤트 B").sum() == 0 and (d0[db.LABEL] == "이벤트 B").sum() == n, "메모리 수정은 원본을 안 바꿈"
 d2, e2 = db.rename_event_df(d1, e1, "이벤트 A", "이벤트 A2", "메모")
 assert "이벤트 A2" in set(e2["이벤트명"]) and (d2[db.LABEL] == "이벤트 A2").sum() == (d1[db.LABEL] == "이벤트 A").sum()
-print("트렌드 리포트 v0.6 시험 통과")
+print("트렌드 리포트 v0.7 시험 통과")
