@@ -4,14 +4,14 @@ NEOVUE BU 설비 데이터 정리·분석 도구 모음. NEOVUE 표시는 창 �
 
 ## 포함 도구
 
-### OneClick (`OneClick/`) — Tool A v1.6 (`NEOVUE_OneClick_정리`)
+### OneClick (`OneClick/`) — Tool A v1.6.1 (`NEOVUE_OneClick_정리`)
 BU 설비 광학 데이터(CA410, LMK6)를 양식 Excel에 자동 정리하는 Tkinter GUI 도구.
 v1.5부터 BU/WU 공정능력(Cp/Cpk) 시트, LD 모델 자동 체크, 누적 DB 적재를 지원.
 v1.5.1부터 누적 DB 기본 위치가 `문서\BU_Tools\BU_History_DB.xlsx` (트렌드 리포트와 같은 파일).
 v1.5.2부터 화면 디자인을 Tool B·트렌드 리포트와 통일.
 
 - `One_click_정리.py` - 메인 Python 소스
-- `NEOVUE_OneClick_정리_v1.6.spec` - PyInstaller spec (이전 버전 spec은 git 기록에)
+- `NEOVUE_OneClick_정리_v1.6.1.spec` - PyInstaller spec (이전 버전 spec은 git 기록에)
 - `양식_Daily data_BU설비_광학데이터_날짜.xlsx` - 기본 양식 파일
 
 ### BU_LotID (`BU_LotID/`) — Tool B v0.7 (`NEOVUE_BU_DATA_정리`)
@@ -55,7 +55,7 @@ python -m pip install pandas openpyxl numpy pillow matplotlib tkinterdnd2 pyinst
 `python -m PyInstaller`로 실행하면 패키지를 설치한 그 파이썬으로 빌드됩니다.
 
 ```powershell
-cd OneClick;  python -m PyInstaller --noconfirm NEOVUE_OneClick_정리_v1.6.spec
+cd OneClick;  python -m PyInstaller --noconfirm NEOVUE_OneClick_정리_v1.6.1.spec
 cd ..\Trend;  python -m PyInstaller --noconfirm NEOVUE_BU_TREND_리포트_v0.7.spec
 cd ..\BU_LotID; python -m PyInstaller --noconfirm NEOVUE_BU_DATA_정리_v0.7.spec
 ```
@@ -64,6 +64,15 @@ cd ..\BU_LotID; python -m PyInstaller --noconfirm NEOVUE_BU_DATA_정리_v0.7.spe
 - `build`·`dist`가 비어 있으면 빌드가 중간에 멈춘 것입니다. 창에 나온 `[빌드 중단]` 또는 `ERROR`/`Traceback` 줄이 원인입니다.
 - spec은 빌드 전에 공용 모듈(`common/`)과 필요한 패키지를 점검하고, 빠진 것이 있으면 설치 명령과 함께 멈춥니다.
 - `Build complete!`까지 나왔는데 `dist`가 비어 있으면 백신(V3 등)이 exe를 검역한 경우입니다.
+
+## Tool A 입력 파일 (호기별)
+
+| 호기 | 색좌표 칸 | BU/WU 칸 | 차이 |
+|---|---|---|---|
+| 3호기 | `LVDataLog.csv` | `LMK6DataLog.csv` | Panel_ID에 '-' 구분 (정리 시 '-' 제거) |
+| 4호기 | `CA410DataLog.csv` | `LMK6DataLog.csv` | 앞쪽에 WPC_* 열 추가 (사용 안 함), 일부 값 앞 공백 |
+
+두 호기 모두 Daily data 양식에 같은 열로 들어감. EEPROM 값은 16진수 글자로 유지('06'이 6이 되지 않음).
 
 ## 세 툴 공통 화면 (2026-11-24, Tool A v1.6 · Tool B v0.7 · 트렌드 v0.7)
 

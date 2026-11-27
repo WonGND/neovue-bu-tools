@@ -75,7 +75,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="NEOVUE_OneClick_정리_v1.6",
+    name="NEOVUE_OneClick_정리_v1.6.1",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

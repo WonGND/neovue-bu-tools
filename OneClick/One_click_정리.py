@@ -22,7 +22,7 @@ import history_db  # noqa: E402
 import ui_style as ui  # noqa: E402
 from capability import is_constant, summary_line  # noqa: E402
 
-VERSION = "v1.6"
+VERSION = "v1.6.1"
 APP_TITLE = f"NEOVUE_OneClick_정리_{VERSION}"
 
 # [설정] 시간 포맷 및 기본 양식 경로
@@ -65,17 +65,28 @@ def app_base_dir() -> Path:
 
 
 # ---------------------------------------------------------------- 데이터 처리 (화면과 분리)
+# v1.6.1: EEPROM 값은 16진수 글자('06', '1B')라 숫자로 읽으면 앞 0이 사라짐 → 글자로 읽음
+_TEXT_COLS = {f"EEPROM_{i}": str for i in range(100)} | {"EEPROM_Verify": str}
+
+
+def _strip_text(df):
+    for c in df.columns:
+        if c in _TEXT_COLS:
+            df[c] = df[c].astype("string").str.strip().astype(object).where(df[c].notna(), None)
+    return df
+
+
 def read_df(path):
     ext = os.path.splitext(path)[1].lower()
     if ext == '.csv':
         last_error = None
         for encoding in ("utf-8-sig", "utf-8", "cp949", "euc-kr"):
             try:
-                return pd.read_csv(path, encoding=encoding)
+                return _strip_text(pd.read_csv(path, encoding=encoding, dtype=_TEXT_COLS))
             except UnicodeDecodeError as exc:
                 last_error = exc
         raise last_error
-    return pd.read_excel(path)
+    return _strip_text(pd.read_excel(path, dtype=_TEXT_COLS))
 
 
 def clean_df(df):
@@ -126,15 +137,20 @@ def sniff_kind(path) -> str | None:
     return None
 
 
+# v1.6.1: 색좌표 파일 이름은 호기마다 다름 — 4호기 CA410DataLog, 3호기 LVDataLog
+NAME_KEYS = {"CA410": ("ca410", "lvdatalog"), "LMK6": ("lmk6",)}
+
+
 def find_pair(path, want: str) -> str | None:
-    """CA410 파일을 고르면 같은 폴더에서 짝이 되는 LMK6 파일(또는 반대)을 찾음.
+    """색좌표(CA410/LV) 파일을 고르면 같은 폴더에서 짝이 되는 LMK6 파일(또는 반대)을 찾음.
     파일 이름의 날짜·접미사가 같은 것을 우선, 없으면 그 폴더에 하나뿐인 것"""
     folder, name = os.path.split(path)
     stem = os.path.splitext(name)[0]
-    key = re.sub(r"^(CA410|LMK6)[_\- ]*(DataLog)?[_\- ]*", "", stem, flags=re.I)
+    key = re.sub(r"^(CA410|LMK6|LV)[_\- ]*(DataLog)?[_\- ]*", "", stem, flags=re.I)
+    keys = NAME_KEYS.get(want, (want.lower(),))
     try:
         cands = [os.path.join(folder, f) for f in sorted(os.listdir(folder))
-                 if f.lower().endswith((".csv", ".xlsx", ".xls")) and want.lower() in f.lower()]
+                 if f.lower().endswith((".csv", ".xlsx", ".xls")) and any(k in f.lower() for k in keys)]
     except OSError:
         return None
     if key:
@@ -224,11 +240,11 @@ def process(opts: dict, log=print, progress=None) -> dict:
     result = {"out_path": None, "caps": None, "db": None}
     df_ca = df_lmk = None
     if ca_path:
-        step(5, "CA410 정리")
-        log("CA410 데이터 정리 중...")
+        step(5, "색좌표 정리")
+        log("색좌표(CA410/LV) 데이터 정리 중...")
         raw = read_df(ca_path)
         df_ca = clean_df(raw)
-        log(f"   CA410 {len(raw)}건 → {len(df_ca)}건 (중복 {len(raw) - len(df_ca)}건 제거)")
+        log(f"   색좌표 {len(raw)}건 → {len(df_ca)}건 (중복 {len(raw) - len(df_ca)}건 제거)")
     if lmk_path:
         step(18, "LMK6 정리")
         log("LMK6 데이터 정리 중...")
@@ -329,9 +345,9 @@ def process(opts: dict, log=print, progress=None) -> dict:
 # ---------------------------------------------------------------- 화면 (v1.6: 노트북 화면 대응 · 경로 기억 · 진행률)
 T = ui.T
 HELP = [
-    ("이 툴이 하는 일", ["CA410(색좌표)·LMK6(BU/WU) DataLog를 정리해 Daily data 양식에 채우고,",
+    ("이 툴이 하는 일", ["색좌표(4호기 CA410DataLog · 3호기 LVDataLog)·LMK6(BU/WU) DataLog를 정리해 Daily data 양식에 채우고,",
                      "공정능력(Cp/Cpk) 시트와 트렌드 리포트용 누적 DB까지 한 번에 만듭니다."]),
-    ("순서", ["① CA410 '찾기'로 파일 선택 → 같은 폴더에 짝이 되는 LMK6 파일이 있으면 자동으로 채워짐",
+    ("순서", ["① 색좌표 칸 '찾기'로 파일 선택 → 같은 폴더에 짝이 되는 LMK6 파일이 있으면 자동으로 채워짐",
             "② 저장 폴더 확인 (처음 한 번 고르면 다음부터 기억)",
             "③ 파란 'One-Click 정리 시작' → 버튼이 채워지며 진행률 표시 → '결과 파일 열기'"]),
     ("칸 설명", ["양식 파일: exe 옆에 양식 엑셀을 두면 그 파일을 쓰고, 없으면 exe에 들어 있는 기본 양식을 씀",
@@ -411,10 +427,10 @@ class OneClickApp:
         body.pack(fill="both", expand=True)
 
         # ① 입력 파일
-        c1, _ = ui.card(body, "① 입력 파일", "CA410을 고르면 같은 폴더의 LMK6를 자동으로 찾아 채움")
+        c1, _ = ui.card(body, "① 입력 파일", "색좌표(CA410·LV)를 고르면 같은 폴더의 LMK6를 자동으로 찾아 채움")
         g = ttk.Frame(c1, style="Card.TFrame")
         g.pack(fill="x", pady=(8, 0))
-        self.ent_ca = self._path_row(g, 0, "CA410 (색좌표)", "찾기", lambda: self.browse_file(self.ent_ca, "CA410"))
+        self.ent_ca = self._path_row(g, 0, "색좌표 (CA410/LV)", "찾기", lambda: self.browse_file(self.ent_ca, "CA410"))
         self.ent_lmk = self._path_row(g, 1, "LMK6 (BU/WU)", "찾기", lambda: self.browse_file(self.ent_lmk, "LMK6"))
         self.ent_lmk.bind("<FocusOut>", lambda _e: self.update_ld_detection())
         self.ent_temp = self._path_row(g, 2, "양식 파일", "변경", self.browse_template)
@@ -548,7 +564,8 @@ class OneClickApp:
         kind = sniff_kind(p)
         notes = []
         if kind and kind != name:
-            notes.append(f"ⓘ 고른 파일은 {kind} 파일로 보입니다 ({name} 칸). 칸이 바뀌지 않았는지 확인하세요.")
+            lbl = {"CA410": "색좌표(CA410/LV)", "LMK6": "LMK6(BU/WU)"}
+            notes.append(f"ⓘ 고른 파일은 {lbl[kind]} 파일로 보입니다 ({lbl[name]} 칸). 칸이 바뀌지 않았는지 확인하세요.")
         # v1.6: 짝 파일 자동 채우기
         other, other_entry = ("LMK6", self.ent_lmk) if name == "CA410" else ("CA410", self.ent_ca)
         if not other_entry.get().strip():
