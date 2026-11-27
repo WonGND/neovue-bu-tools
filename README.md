@@ -4,42 +4,46 @@ NEOVUE BU 설비 데이터 정리·분석 도구 모음. NEOVUE 표시는 창 �
 
 ## 포함 도구
 
-### OneClick (`OneClick/`) — Tool A v1.6.1 (`NEOVUE_OneClick_정리`)
+### OneClick (`OneClick/`) — Tool A v1.6.2 (`NEOVUE_OneClick_정리`)
 BU 설비 광학 데이터(CA410, LMK6)를 양식 Excel에 자동 정리하는 Tkinter GUI 도구.
 v1.5부터 BU/WU 공정능력(Cp/Cpk) 시트, LD 모델 자동 체크, 누적 DB 적재를 지원.
 v1.5.1부터 누적 DB 기본 위치가 `문서\BU_Tools\BU_History_DB.xlsx` (트렌드 리포트와 같은 파일).
 v1.5.2부터 화면 디자인을 Tool B·트렌드 리포트와 통일.
 
 - `One_click_정리.py` - 메인 Python 소스
-- `NEOVUE_OneClick_정리_v1.6.1.spec` - PyInstaller spec (이전 버전 spec은 git 기록에)
+- `NEOVUE_OneClick_정리_v1.6.2.spec` - PyInstaller spec (이전 버전 spec은 git 기록에)
 - `양식_Daily data_BU설비_광학데이터_날짜.xlsx` - 기본 양식 파일
 
-### BU_LotID (`BU_LotID/`) — Tool B v0.7 (`NEOVUE_BU_DATA_정리`)
+### BU_LotID (`BU_LotID/`) — Tool B v0.8 (`NEOVUE_BU_DATA_정리`)
 BU/WU 이미지 파일을 LotID 단위로 묶어 Excel로 정리하는 Tkinter GUI 도구.
 v0.6부터 `crop_report.xlsx`에 공정능력 시트 추가 (판정 = 그 실행에서 고른 측정 CSV 전체, 이미지 정리본 LotID는 참고로 표시).
 설정 화면에서 끌 수 있음. 결과 시트는 v0.5와 같음.
+v0.8: 다시 실행하면 바뀐 이미지만 복사·자르기(결과 폴더의 `.crop_cache.json`에 기록) — 결과 폴더·엑셀은 처음부터 만든 것과 같음.
 
 - `BU_organize_gui_v05.py`, `BU_organize_one_click_v05.py` - 소스 (파일 이름은 v0.5 그대로)
-- `NEOVUE_BU_DATA_정리_v0.7.spec` - PyInstaller spec
+- `NEOVUE_BU_DATA_정리_v0.8.spec` - PyInstaller spec
 - `neovue_bu_data.ico` - 세 툴 공용 아이콘 (exe·창 아이콘)
 
-### Trend (`Trend/`) — BU 트렌드 리포트 v0.7 (`NEOVUE_BU_TREND_리포트`)
+### Trend (`Trend/`) — BU 트렌드 리포트 v0.8 (`NEOVUE_BU_TREND_리포트`)
 측정일·이벤트 한 표, 통합정리 파일 끌어다 놓기/선택 → 이벤트만 입력, 이벤트별 트렌드 리포트(거시·미시).
 v0.3: 리포트 '엑셀 열기'·'폴더 열기' 버튼, '변화 감지' 시트(읽는 법·경고 기준·의미/확인할 것).
 v0.4: 이벤트 요약 핵심 그림(한눈 보드 · Cpk+NG율) · 결론 메모 칸, 미시 시트 이벤트별 접기.
 v0.5: WU -100(측정 이상값) 제외·알람, 색좌표 확대 그림, 측정일별 색좌표 이동, 변화 감지 '내용' 열.
 v0.6: 측정일을 끌어서 이벤트로 옮기기 · 되돌리기(Ctrl+Z) · 수정 즉시 반영(저장은 뒤에서) · 리포트 진행률 버튼 · 휘도/CR 박스플롯.
 v0.7: 리포트 자동 저장(문서\BU_Tools\리포트) · 지표 선택 기억 · DB 표시 정리.
+v0.8: 리포트 가독성 — 이벤트 요약을 노트북 한 화면 폭에, 거시 그래프를 주제별 구역(바로가기)으로, 이벤트 색을 모든 그래프·표에서 같게, 미시는 측정일별 표 먼저.
 
 - `BU_trend_report.py` - GUI
 - `trend_report.py` - 통합정리 파일 읽기·리포트 생성 로직
-- `NEOVUE_BU_TREND_리포트_v0.7.spec` - PyInstaller spec
+- `NEOVUE_BU_TREND_리포트_v0.8.spec` - PyInstaller spec
 
 ### 공용 모듈 (`common/`)
 `capability.py`(계산) · `capability_sheet.py`(공정능력 시트) · `charts.py`(그림) · `history_db.py`(누적 DB) · `ui_style.py`(공용 화면 스타일 · 아이콘 · 파일 열기)
 
 ### 시험 (`tests/`)
 - `make_test_datalogs.py` - 실측 Daily data로 시험용 CA410/LMK6 DataLog 생성(재측정 중복·LD 모델 포함)
+- `make_fake_daily.py` - 실측 파일이 없을 때 같은 형식의 가상 Daily data 생성 (`make_test_datalogs.py` 입력용).
+  가상 데이터로는 `test_common.py` 앞쪽의 실측 값 비교 4건(Cp/Cpk 기대값·NG 수·비정규 경고)만 맞지 않고 나머지는 모두 확인 가능
 - `test_common.py` - 공정능력 값(양식 19행 수식 포함)·LD 감지·누적 DB(중복 방지·날짜 묶기·공용 위치) 검증
 - `run_tool_a.py`, `run_tool_b.py`, `run_tool_c.py` - 화면 없이 Tool A·Tool B·트렌드 리포트를 끝까지 실행
 
@@ -55,15 +59,17 @@ python -m pip install pandas openpyxl numpy pillow matplotlib tkinterdnd2 pyinst
 `python -m PyInstaller`로 실행하면 패키지를 설치한 그 파이썬으로 빌드됩니다.
 
 ```powershell
-cd OneClick;  python -m PyInstaller --noconfirm NEOVUE_OneClick_정리_v1.6.1.spec
-cd ..\Trend;  python -m PyInstaller --noconfirm NEOVUE_BU_TREND_리포트_v0.7.spec
-cd ..\BU_LotID; python -m PyInstaller --noconfirm NEOVUE_BU_DATA_정리_v0.7.spec
+cd OneClick;  python -m PyInstaller --noconfirm NEOVUE_OneClick_정리_v1.6.2.spec
+cd ..\Trend;  python -m PyInstaller --noconfirm NEOVUE_BU_TREND_리포트_v0.8.spec
+cd ..\BU_LotID; python -m PyInstaller --noconfirm NEOVUE_BU_DATA_정리_v0.8.spec
 ```
 
 - 성공하면 마지막 줄에 `Build complete! The results are available in: <경로>`가 나오고, exe는 그 경로(명령을 실행한 폴더의 `dist`)에 생깁니다.
 - `build`·`dist`가 비어 있으면 빌드가 중간에 멈춘 것입니다. 창에 나온 `[빌드 중단]` 또는 `ERROR`/`Traceback` 줄이 원인입니다.
 - spec은 빌드 전에 공용 모듈(`common/`)과 필요한 패키지를 점검하고, 빠진 것이 있으면 설치 명령과 함께 멈춥니다.
 - `Build complete!`까지 나왔는데 `dist`가 비어 있으면 백신(V3 등)이 exe를 검역한 경우입니다.
+- exe는 파일 하나(onefile)로 유지. 실행마다 묶인 파일을 임시 폴더에 풀기 때문에, spec에서 이 툴이 쓰지 않는 큰 패키지(pyarrow 등)를 빼고 UPX 압축을 끔 (2026-11-27)
+- 그래프 글꼴 목록은 `%LOCALAPPDATA%\BU_Tools\matplotlib`에 한 번 만들어 두고 다시 씀 (이전에는 exe 실행마다 새로 만듦)
 
 ## Tool A 입력 파일 (호기별)
 

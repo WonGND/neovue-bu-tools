@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 import os
 import re
 import shutil
@@ -22,7 +23,7 @@ _HERE = Path(__file__).resolve().parent
 for _p in (_HERE.parent / "common", _HERE / "common"):
     if _p.exists() and str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
-TOOL_VERSION = "v0.7"
+TOOL_VERSION = "v0.8"
 
 # 처리 대상 이미지 확장자
 ALLOWED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp")
@@ -37,11 +38,32 @@ MODEL_NAME_CANDIDATES = (
     "Model_Name", "ModelName", "Model", "RecipeName", "Recipe", "Product", "Product_Name",
 )
 LOT_ID_CANDIDATES = ("Panel_ID", "LotID", "Lot_ID", "PanelID", "Panel Id")
+# v0.8: 이 툴이 만드는 결과 폴더 이름 끝 — 측정 CSV·폴더 미리보기에서 훑지 않음 (이미지 수천 장)
+OUTPUT_DIR_SUFFIXES = ("_LotID_latest_v1", "_LotID_latest_v1_cropped_v1")
+CROP_CACHE_NAME = ".crop_cache.json"      # v0.8: 이전 실행의 자르기 결과 기억 (같은 원본·같은 설정이면 다시 안 자름)
+CROP_CACHE_VERSION = 1
+THUMB_WIDTH_PX = 240                       # 엑셀 결과 시트에 넣는 이미지 폭
+
+
+def is_output_dir(name: str) -> bool:
+    return name.endswith(OUTPUT_DIR_SUFFIXES)
+
+
+def walk_files(root: Path, skip_output_dirs: bool = False):
+    """os.walk 한 번으로 모든 파일 경로를 돌려줌 (rglob을 확장자마다 반복하지 않도록)"""
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames.sort()
+        if skip_output_dirs:
+            dirnames[:] = [d for d in dirnames if not is_output_dir(d)]
+        base = Path(dirpath)
+        for name in sorted(filenames):
+            yield base / name
 
 class PipelineCancelled(Exception):
     pass
 
-def get_resized_xl_image(image_path: Path, max_width_px: int) -> XLImage | None:
+def resized_png_bytes(image_path: Path, max_width_px: int) -> bytes | None:
+    """엑셀에 넣을 축소 이미지(PNG) — v0.8부터 자르기 작업 스레드에서 미리 만들어 둠"""
     if not image_path.exists():
         return None
     try:
@@ -51,14 +73,21 @@ def get_resized_xl_image(image_path: Path, max_width_px: int) -> XLImage | None:
                 ratio = max_width_px / w
                 new_w, new_h = int(w * ratio), int(h * ratio)
                 img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-            
+
             img_byte_arr = io.BytesIO()
             img.save(img_byte_arr, format="PNG")
-            img_byte_arr.seek(0)
-            return XLImage(img_byte_arr)
+            return img_byte_arr.getvalue()
     except Exception as e:
         print(f"Error resizing image {image_path}: {e}")
         return None
+
+
+def xl_image_from_bytes(data: bytes | None) -> XLImage | None:
+    return XLImage(io.BytesIO(data)) if data else None
+
+
+def get_resized_xl_image(image_path: Path, max_width_px: int) -> XLImage | None:
+    return xl_image_from_bytes(resized_png_bytes(image_path, max_width_px))
 
 def print_progress(label: str, current: int, total: int, done: bool = False) -> None:
     if total <= 0: return
@@ -142,22 +171,73 @@ def collect_latest_lotid_folders(integrated_root: Path, cancel_check=None) -> tu
 
     return latest_by_lotid, all_rows
 
+def _same_file(src: Path, dst: Path) -> bool:
+    """copy2는 수정 시각을 그대로 옮기므로 크기·수정 시각이 같으면 이전 실행에서 복사한 같은 파일"""
+    try:
+        a, b = src.stat(), dst.stat()
+    except OSError:
+        return False
+    return a.st_size == b.st_size and abs(a.st_mtime - b.st_mtime) < 2.0   # FAT/네트워크 드라이브 2초 단위 대비
+
+
+def _remove(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def sync_tree(src: Path, dst: Path, cancel_check=None) -> tuple[int, int]:
+    """dst를 src와 같게 맞춤 — 바뀐 파일만 복사, src에 없는 것은 지움. (복사 수, 건너뜀 수)"""
+    copied = skipped = 0
+    for dirpath, dirnames, filenames in os.walk(src):
+        ensure_not_cancelled(cancel_check)
+        dirnames.sort()
+        rel = Path(dirpath).relative_to(src)
+        out_dir = dst / rel
+        if out_dir.exists() and not out_dir.is_dir():
+            out_dir.unlink()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        keep = set(dirnames) | set(filenames)
+        for extra in list(out_dir.iterdir()):
+            if extra.name not in keep:
+                _remove(extra)
+        for name in filenames:
+            s, d = Path(dirpath) / name, out_dir / name
+            if d.is_dir():
+                shutil.rmtree(d)
+            if _same_file(s, d):
+                skipped += 1
+            else:
+                shutil.copy2(s, d)
+                copied += 1
+    return copied, skipped
+
+
 def copy_latest_folders(latest_by_lotid: dict[str, Path], dst_root: Path, cancel_check=None) -> None:
-    if dst_root.exists():
-        shutil.rmtree(dst_root)
+    """v0.8: 결과 폴더를 통째로 지우고 다시 복사하지 않고, 바뀐 파일만 복사 (결과 폴더 내용은 같음)"""
     dst_root.mkdir(parents=True, exist_ok=True)
 
     total = len(latest_by_lotid)
     print(f"\n[2/7] 최신 LotID 폴더 복사 시작 (대상: {total}개)")
 
+    for stale in list(dst_root.iterdir()):          # 이번 대상이 아닌 LotID 폴더(또는 파일)는 정리
+        if stale.name not in latest_by_lotid:
+            _remove(stale)
+
+    n_copy = n_skip = 0
     for idx, (lot_id, src_path) in enumerate(latest_by_lotid.items(), start=1):
         ensure_not_cancelled(cancel_check)
-        shutil.copytree(src_path, dst_root / lot_id)
+        c, k = sync_tree(src_path, dst_root / lot_id, cancel_check)
+        n_copy += c
+        n_skip += k
         if idx == 1 or idx % 20 == 0 or idx == total:
             print_progress("  복사 진행", idx, total, done=(idx == total))
+    print(f"  새로 복사 {n_copy:,}개 · 이미 있어 건너뜀 {n_skip:,}개")
 
 def collect_latest_measurements(data_root: Path, cancel_check=None) -> tuple[dict[str, dict], list[dict]]:
-    csv_files = list(data_root.rglob(DATA_FILE_PATTERN))
+    target = DATA_FILE_PATTERN.lower()
+    csv_files = [f for f in walk_files(data_root, skip_output_dirs=True) if f.name.lower() == target]
     total = len(csv_files)
     print(f"\n[4/7] 측정 CSV 스캔 시작 (대상 파일: {total}개)")
 
@@ -223,58 +303,111 @@ def excel_measurement_value(value):
         return text
 
 def find_non_black_bbox(img: Image.Image, threshold: int = 12) -> tuple[int, int, int, int] | None:
-    arr = np.array(img.convert("L"))
-    non_black = np.where(arr > threshold)
-    if non_black[0].size == 0 or non_black[1].size == 0: return None
-    return (int(np.min(non_black[1])), int(np.min(non_black[0])), int(np.max(non_black[1])), int(np.max(non_black[0])))
+    """임계값보다 밝은 픽셀의 경계 (x_min, y_min, x_max, y_max, 끝 포함).
+    v0.8: numpy 좌표 배열 대신 PIL 내장 getbbox — 같은 결과, 큰 이미지에서 수십 배 빠름"""
+    lut = [255 if v > threshold else 0 for v in range(256)]
+    box = img.convert("L").point(lut).getbbox()
+    if box is None:
+        return None
+    return (box[0], box[1], box[2] - 1, box[3] - 1)
 
-def crop_images(merged_root: Path, cropped_root: Path, threshold: int, padding: int, cancel_check=None) -> list[dict]:
-    if cropped_root.exists(): shutil.rmtree(cropped_root)
+def _load_crop_cache(cropped_root: Path, threshold: int, padding: int) -> dict:
+    path = cropped_root / CROP_CACHE_NAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if data.get("v") != CROP_CACHE_VERSION or data.get("threshold") != threshold or data.get("padding") != padding:
+        return {}                                 # 설정이 바뀌면 전부 다시 자름
+    return data.get("files", {})
+
+
+def _save_crop_cache(cropped_root: Path, threshold: int, padding: int, files: dict) -> None:
+    try:
+        (cropped_root / CROP_CACHE_NAME).write_text(
+            json.dumps({"v": CROP_CACHE_VERSION, "threshold": threshold, "padding": padding, "files": files}),
+            encoding="utf-8")
+    except OSError as exc:
+        print(f"  (자르기 기록 저장 실패 — 다음 실행 때 전부 다시 자름: {exc})")
+
+
+def _list_images(merged_root: Path) -> list[Path]:
+    """확장자 순서(png → jpg → …)대로 — v0.7의 확장자별 rglob과 같은 순서"""
+    order = {ext: i for i, ext in enumerate(ALLOWED_EXTENSIONS)}
+    files = [f for f in walk_files(merged_root) if f.suffix.lower() in order]
+    return sorted(files, key=lambda f: order[f.suffix.lower()])
+
+
+def crop_images(merged_root: Path, cropped_root: Path, threshold: int, padding: int, cancel_check=None,
+                thumb_width_px: int | None = THUMB_WIDTH_PX) -> list[dict]:
+    """v0.8: 결과 폴더를 지우지 않고, 원본(크기·수정 시각)과 설정이 같은 이미지는 이전 결과를 그대로 씀.
+    엑셀용 축소 이미지도 여기서(여러 스레드로) 미리 만듦."""
     cropped_root.mkdir(parents=True, exist_ok=True)
+    cache = _load_crop_cache(cropped_root, threshold, padding)
 
-    image_files = []
-    for ext in ALLOWED_EXTENSIONS:
-        image_files.extend(list(merged_root.rglob(f"*{ext}")))
-    
+    image_files = _list_images(merged_root)
     total = len(image_files)
     print(f"\n[5/7] 이미지 크롭 시작 (대상: {total}개, 멀티스레드 활성화)")
 
-    records = []
+    # 이번 대상이 아닌 이전 결과 이미지는 정리 (crop_report.xlsx·기록 파일은 둠)
+    wanted = {str(f.relative_to(merged_root)) for f in image_files}
+    for f in list(walk_files(cropped_root)):
+        if f.suffix.lower() in ALLOWED_EXTENSIONS and str(f.relative_to(cropped_root)) not in wanted:
+            f.unlink()
+    for dirpath, dirnames, filenames in os.walk(cropped_root, topdown=False):   # 비게 된 폴더 정리
+        if Path(dirpath) != cropped_root and not os.listdir(dirpath):
+            os.rmdir(dirpath)
+
+    results: list[dict | None] = [None] * total
+    new_cache: dict = {}
     lock = threading.Lock()
     processed_count = 0
+    reused = 0
 
-    def process_one(src: Path):
-        nonlocal processed_count
+    def process_one(i: int, src: Path):
+        nonlocal processed_count, reused
         if cancel_check and cancel_check(): return
-        
-        rel_path = src.relative_to(merged_root)
-        dst = cropped_root / rel_path
-        dst.parent.mkdir(parents=True, exist_ok=True)
+
+        rel = str(src.relative_to(merged_root))
+        dst = cropped_root / rel
         lot_id, kind = parse_lot_kind(src.stem)
-
+        rec = None
         try:
-            with Image.open(src) as img:
-                bbox = find_non_black_bbox(img, threshold=threshold)
-                if bbox is None:
-                    status = "NO_OBJECT_DETECTED"
-                    used_bbox = (0, 0, img.width, img.height)
-                    cropped = img.copy()
-                else:
-                    status = "OK"
-                    x_min, y_min, x_max, y_max = bbox
-                    used_bbox = (max(0, x_min-padding), max(0, y_min-padding), min(img.width, x_max+padding), min(img.height, y_max+padding))
-                    cropped = img.crop(used_bbox)
+            st = src.stat()
+            sig = [st.st_size, st.st_mtime_ns]
+            old = cache.get(rel)
+            if old and old.get("sig") == sig and old.get("dst_size") == (dst.stat().st_size if dst.exists() else -1):
+                rec = {"lot_id": lot_id, "kind": kind, "src": src, "dst": dst,
+                       "bbox": tuple(old["bbox"]), "status": old["status"]}
+                with lock:
+                    reused += 1
+            else:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                with Image.open(src) as img:
+                    bbox = find_non_black_bbox(img, threshold=threshold)
+                    if bbox is None:
+                        status = "NO_OBJECT_DETECTED"
+                        used_bbox = (0, 0, img.width, img.height)
+                        cropped = img.copy()
+                    else:
+                        status = "OK"
+                        x_min, y_min, x_max, y_max = bbox
+                        used_bbox = (max(0, x_min-padding), max(0, y_min-padding), min(img.width, x_max+padding), min(img.height, y_max+padding))
+                        cropped = img.crop(used_bbox)
 
-                if dst.suffix.lower() in (".jpg", ".jpeg") and cropped.mode not in ("RGB", "L"):
-                    cropped = cropped.convert("RGB")
-                cropped.save(dst)
-            
+                    if dst.suffix.lower() in (".jpg", ".jpeg") and cropped.mode not in ("RGB", "L"):
+                        cropped = cropped.convert("RGB")
+                    cropped.save(dst)
+                rec = {"lot_id": lot_id, "kind": kind, "src": src, "dst": dst, "bbox": used_bbox, "status": status}
+            if thumb_width_px and kind in ("BU", "WU"):
+                rec["thumb"] = resized_png_bytes(dst, thumb_width_px)
             with lock:
-                records.append({"lot_id": lot_id, "kind": kind, "src": src, "dst": dst, "bbox": used_bbox, "status": status})
+                new_cache[rel] = {"sig": sig, "bbox": list(rec["bbox"]), "status": rec["status"],
+                                  "dst_size": dst.stat().st_size}
         except Exception as exc:
-            with lock:
-                records.append({"lot_id": lot_id, "kind": kind, "src": src, "dst": None, "bbox": None, "status": f"ERROR: {exc}"})
-        
+            rec = {"lot_id": lot_id, "kind": kind, "src": src, "dst": None, "bbox": None, "status": f"ERROR: {exc}"}
+        results[i] = rec
+
         with lock:
             processed_count += 1
             if processed_count == 1 or processed_count % 20 == 0 or processed_count == total:
@@ -282,11 +415,14 @@ def crop_images(merged_root: Path, cropped_root: Path, threshold: int, padding: 
 
     max_workers = min(32, (os.cpu_count() or 4) + 4)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        executor.map(process_one, image_files)
+        list(executor.map(process_one, range(total), image_files))
 
-    return records
+    _save_crop_cache(cropped_root, threshold, padding, new_cache)
+    if reused:
+        print(f"  이전 결과 재사용 {reused:,}개 · 새로 자름 {total - reused:,}개")
+    return [r for r in results if r is not None]
 
-def write_excel(records, excel_path: Path, latest_measurements=None, image_width_px: int = 240, cancel_check=None,
+def write_excel(records, excel_path: Path, latest_measurements=None, image_width_px: int = THUMB_WIDTH_PX, cancel_check=None,
                 extra=None):
     wb = Workbook()
     ws = wb.active
@@ -294,6 +430,7 @@ def write_excel(records, excel_path: Path, latest_measurements=None, image_width
     ws.append(["LotID", "판정", "BU data 수치화", "BU Image", "WU data", "WU Image"])
 
     grouped = {}
+    thumbs = {str(rec["dst"]): rec.get("thumb") for rec in records if rec.get("dst") is not None}
     for rec in records:
         lot_id, kind = rec["lot_id"], rec["kind"]
         grouped.setdefault(lot_id, {"BU": None, "WU": None})
@@ -313,7 +450,8 @@ def write_excel(records, excel_path: Path, latest_measurements=None, image_width
         for col, kind in [("D", "BU"), ("F", "WU")]:
             img_path = grouped[lot_id][kind]
             if img_path and Path(img_path).exists():
-                xl_img = get_resized_xl_image(Path(img_path), image_width_px)
+                pre = thumbs.get(str(img_path)) if image_width_px == THUMB_WIDTH_PX else None
+                xl_img = xl_image_from_bytes(pre) if pre else get_resized_xl_image(Path(img_path), image_width_px)
                 if xl_img:
                     ws.add_image(xl_img, f"{col}{row_idx}")
                     max_h = max(max_h, xl_img.height)

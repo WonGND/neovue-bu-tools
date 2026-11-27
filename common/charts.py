@@ -7,20 +7,61 @@ from __future__ import annotations
 
 import io
 import math
+import os
+import sys
+from pathlib import Path
 
-import matplotlib
+
+def _keep_font_cache() -> None:
+    """exe(onefile)는 실행마다 matplotlib 설정 폴더를 임시 폴더로 바꿔서 글꼴 목록을 매번 새로 만든다
+    ('Matplotlib is building the font cache', 수 초). 로컬 폴더에 두고 다음 실행 때 다시 씀."""
+    if not getattr(sys, "frozen", False):
+        return
+    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / ".cache")
+    d = Path(base) / "BU_Tools" / "matplotlib"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        os.environ["MPLCONFIGDIR"] = str(d)
+    except OSError:
+        pass
+
+
+_keep_font_cache()
+import matplotlib  # noqa: E402
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
+from matplotlib import font_manager as _fm  # noqa: E402
+
+_FONT_CANDIDATES = ("Malgun Gothic", "Noto Sans CJK KR", "Noto Sans CJK JP", "AppleGothic")
+_installed = {f.name for f in _fm.fontManager.ttflist}
+# 설치된 글꼴만 넣음 — 없는 글꼴을 넣으면 글자를 그릴 때마다 찾다가 실패해 느려지고 로그에 경고가 수백 줄 쌓임
+FONT_FAMILY = [f for f in _FONT_CANDIDATES if f in _installed][:1] + ["DejaVu Sans"]
 
 plt.rcParams.update({
-    "font.family": ["Malgun Gothic", "Noto Sans CJK KR", "Noto Sans CJK JP", "AppleGothic", "DejaVu Sans"],
+    "font.family": FONT_FAMILY,
     "axes.unicode_minus": False, "font.size": 9,
     "axes.spines.top": False, "axes.spines.right": False,
 })
 INK, GREY, BLUE, RED, AMBER, SLATE = "#111827", "#9ca3af", "#2563eb", "#dc2626", "#d97706", "#475569"
 ORANGE = "#f59e0b"
+# 지표 색 (트렌드 v0.8: 모든 그래프 같은 색) — WU = 파랑 계열, BU = 짙은 회색 계열, 점선/연한 색 = Cp
+METRIC_COLORS = {"WU Cpk": BLUE, "WU Cp": "#93c5fd", "BU Cpk": "#4b5563", "BU Cp": "#cbd5e1"}
+# 이벤트 색 (트렌드 v0.8: 모든 그래프·표 같은 규칙) — 시간 순 k번째 이벤트, 최신(마지막)은 항상 파랑
+EVENT_PALETTE = ["#94a3b8", "#f59e0b", "#10b981", "#a855f7", "#db2777", "#14b8a6", "#f97316", "#64748b"]
+
+
+def event_colors(n: int) -> list[str]:
+    """이벤트 n개(시간 순)의 색. 마지막 = 파랑, 나머지는 회색·주황·초록… 순서"""
+    return [BLUE if k == n - 1 else EVENT_PALETTE[k % len(EVENT_PALETTE)] for k in range(n)]
+
+
+def _tint(hex_color: str, a: float = 0.22) -> str:
+    """흰색과 섞은 연한 색 (상자 채우기용)"""
+    h = hex_color.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    return "#%02x%02x%02x" % tuple(int(255 - (255 - c) * a) for c in (r, g, b))
 
 
 def _png(fig) -> bytes:
@@ -118,8 +159,10 @@ def hist_overlay(x_all, x_sub, name, lsl, usl, cap_all, cap_sub, width=5.6, heig
     return _png(fig)
 
 
-def boxplot_groups(groups: dict, name, lsl, title, width=6.0, height=3.4, highlight_last=True, unit="%") -> bytes:
-    """그룹(이벤트·측정일)별 박스플롯 + LSL. groups = {라벨: 값 배열}. lsl=None이면 규격선 없음(휘도·CR)"""
+def boxplot_groups(groups: dict, name, lsl, title, width=6.0, height=3.4, highlight_last=True, unit="%",
+                   colors=None) -> bytes:
+    """그룹(이벤트·측정일)별 박스플롯 + LSL. groups = {라벨: 값 배열}. lsl=None이면 규격선 없음(휘도·CR)
+    colors = 그룹별 색(이벤트 색) — 주면 상자를 그 색으로 칠함 (트렌드 v0.8)"""
     labels = list(groups)
     data = [np.asarray(groups[k], dtype=float) for k in labels]
     data = [v[np.isfinite(v)] for v in data]
@@ -127,6 +170,9 @@ def boxplot_groups(groups: dict, name, lsl, title, width=6.0, height=3.4, highli
     bp = ax.boxplot(data, widths=0.5, patch_artist=True,
                     flierprops=dict(markersize=2, markerfacecolor=GREY, markeredgecolor=GREY))
     for i, b in enumerate(bp["boxes"]):
+        if colors is not None:
+            b.set(facecolor=_tint(colors[i]), edgecolor=colors[i], linewidth=1.4)
+            continue
         last = highlight_last and i == len(data) - 1 and len(data) > 1
         b.set(facecolor="#dbeafe" if last else "#e2e8f0", edgecolor=BLUE if last else SLATE)
     for m in bp["medians"]:
@@ -142,7 +188,7 @@ def boxplot_groups(groups: dict, name, lsl, title, width=6.0, height=3.4, highli
 
 def cp_cpk_bars(labels, series: dict, title="Cp · Cpk 추이", width=6.0, height=3.4) -> bytes:
     """series = {'WU Cp': [..], 'WU Cpk': [..], 'BU Cp': [..], 'BU Cpk': [..]} (NaN은 N/A)"""
-    colors = {"WU Cp": "#93c5fd", "WU Cpk": BLUE, "BU Cp": "#d1d5db", "BU Cpk": "#4b5563"}
+    colors = METRIC_COLORS
     fig, ax = plt.subplots(figsize=(width, height))
     xpos = np.arange(len(labels))
     keys = list(series)
@@ -178,7 +224,8 @@ def ng_rate_line(labels, rates, title="NG율 추이", width=6.0, height=3.0) -> 
     return _png(fig)
 
 
-def white_xy(labels, xs, ys, typ=(0.293, 0.320), gcs=0.005, title="White 색좌표 평균 이동", width=5.0, height=3.8) -> bytes:
+def white_xy(labels, xs, ys, typ=(0.293, 0.320), gcs=0.005, title="White 색좌표 평균 이동", width=5.0, height=3.8,
+             colors=None) -> bytes:
     """typ=None이면 Typ·GCS 원 없이 이동 궤적만 그린다(설정에 Typ가 없는 모델)."""
     fig, ax = plt.subplots(figsize=(width, height))
     if typ is not None:
@@ -193,7 +240,9 @@ def white_xy(labels, xs, ys, typ=(0.293, 0.320), gcs=0.005, title="White 색좌�
     ax.plot(xs, ys, color="#94a3b8", lw=1)
     offs = [(-0.0004, 0, "right"), (0, 0.0006, "center"), (0.0004, -0.0003, "left")]
     for k, (a, b) in enumerate(zip(xs, ys)):
-        ax.scatter([a], [b], color=BLUE if k == len(xs) - 1 else "#64748b", zorder=3, s=30)
+        col = colors[k] if colors is not None else (BLUE if k == len(xs) - 1 else "#64748b")
+        ax.scatter([a], [b], color=col, zorder=3, s=36 if colors is not None else 30,
+                   edgecolor="white" if colors is not None else None)
         dx, dy, ha = offs[k % 3]
         ax.text(a + dx, b + dy, labels[k], fontsize=8, va="center", ha=ha)
     ax.set_aspect("equal")
@@ -226,9 +275,9 @@ def daily_cpk_line(dates, wu_cpk, bu_cpk, memo=None, title="측정일별 Cp · C
                    width=5.4, height=3.4) -> bytes:
     fig, ax = plt.subplots(figsize=(width, height))
     xs = range(len(dates))
-    lines = [("WU Cpk", wu_cpk, BLUE, "-"), ("BU Cpk", bu_cpk, "#4b5563", "-")]
+    lines = [("WU Cpk", wu_cpk, METRIC_COLORS["WU Cpk"], "-"), ("BU Cpk", bu_cpk, METRIC_COLORS["BU Cpk"], "-")]
     if wu_cp is not None:
-        lines.append(("WU Cp", wu_cp, "#93c5fd", ":"))
+        lines.append(("WU Cp", wu_cp, METRIC_COLORS["WU Cp"], ":"))
     if bu_cp is not None:
         lines.append(("BU Cp", bu_cp, "#9ca3af", ":"))
     top = 2.0
@@ -325,6 +374,8 @@ def summary_board(rows: list[dict], ng_warn=5.0, width=7.2, height=4.4) -> bytes
         for x, w, v, f in zip(xs, ws, vals, fills):
             ax.add_patch(Rectangle((x, y), w, 0.42, fc=f, ec="#CBD5E1"))
             ax.text(x + w / 2, y + 0.21, v, fontsize=8.5, ha="center", va="center", color=INK)
+        if row.get("color"):                     # v0.8: 이벤트 색 표시 (그래프와 같은 색)
+            ax.add_patch(Rectangle((xs[0] + 0.08, y + 0.11), 0.2, 0.2, fc=row["color"], ec="none"))
     return _png(fig)
 
 
@@ -334,12 +385,13 @@ def cpk_ng_combo(labels, wu_cpk, bu_cpk, ng, warn=None, title="Cpk 추이 + NG�
     w = 0.36
     fig, ax = plt.subplots(figsize=(width, height))
     bu = [np.nan if v is None else v for v in bu_cpk]
-    ax.bar(x - w / 2, wu_cpk, w, color="#93C5FD", label="WU Cpk")
-    ax.bar(x + w / 2, bu, w, color="#1E3A5F", label="BU Cpk")
+    ax.bar(x - w / 2, wu_cpk, w, color=METRIC_COLORS["WU Cpk"], label="WU Cpk")
+    ax.bar(x + w / 2, bu, w, color=METRIC_COLORS["BU Cpk"], label="BU Cpk")
     top = max([v for v in list(wu_cpk) + bu if v is not None and np.isfinite(v)] + [1.5]) * 1.25
     for th, c, lab in ((1.33, "#15803D", "1.33 적합"), (1.0, AMBER, "1.00 주의")):
         ax.axhline(th, color=c, ls="--", lw=1)
-        ax.text(len(labels) - 0.45, th + top * 0.01, lab, color=c, fontsize=8)
+        ax.text(-0.48, th + top * 0.01, lab, color=c, fontsize=8, ha="left", va="bottom", zorder=5,
+                bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=0.85))   # v0.8: 왼쪽 (오른쪽 축과 겹침 방지)
     for xi, v in zip(x, bu):
         if not np.isfinite(v):
             ax.text(xi + w / 2, top * 0.02, "LD", ha="center", fontsize=8, color=SLATE)
@@ -352,7 +404,8 @@ def cpk_ng_combo(labels, wu_cpk, bu_cpk, ng, warn=None, title="Cpk 추이 + NG�
     ax2.set_ylabel("NG율 (%)", color=RED)
     ax2.spines["top"].set_visible(False)
     for xi, v in zip(x, ng):
-        ax2.text(xi, v + ax2.get_ylim()[1] * 0.03, f"{v:.1f}%", color=RED, ha="center", fontsize=8)
+        ax2.text(xi, v + ax2.get_ylim()[1] * 0.03, f"{v:.1f}%", color=RED, ha="center", fontsize=8,
+                 bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=0.85))   # 막대 위에서도 읽히게
     for xi, k in zip(x, warn or []):
         if k:
             ax.text(xi, top * 0.95, f"⚠ {k}건", ha="center", fontsize=8.5, color=RED, fontweight="bold")
@@ -364,7 +417,7 @@ def cpk_ng_combo(labels, wu_cpk, bu_cpk, ng, warn=None, title="Cpk 추이 + NG�
 
 
 # ------------------------------------------------------------------ 색좌표 확대 (트렌드 v0.5)
-_CLOUD = ["#94a3b8", "#f59e0b", "#10b981", "#a855f7", "#ef4444", "#14b8a6", "#f97316", "#64748b"]
+_CLOUD = EVENT_PALETTE                     # v0.8: 이벤트 색 규칙과 같음 (빨강은 규격선 색이라 뺌)
 
 
 def _ellipse(ax, x, y, color, k=2.0):

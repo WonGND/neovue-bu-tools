@@ -1,4 +1,4 @@
-"""트렌드 리포트 v0.7 로직 시험 (화면 없이)
+"""트렌드 리포트 v0.8 로직 시험 (화면 없이)
 사용: python run_tool_c.py <Tool A 시험 출력 폴더(DB 포함)> <리포트 출력 폴더>
 1) 과거 파일(B, C) 추가 + 이벤트 지정 → 다시 추가해도 0건
 2) Tool A가 이미 쌓은 날짜의 통합정리 파일을 추가하며 이벤트 지정 → 새로 넣지 않고 미지정 행만 묶음
@@ -100,7 +100,7 @@ rows = [[wc.cell(r, c).value for c in range(2, 10)] for r in range(hr + 1, hr + 
 hits = [r for r in rows if str(r[6]).startswith("⚠")]
 assert hits and all(r[7] and "→" not in r[7] for r in hits), "⚠ 행 내용 (화살표 안내 없음)"
 assert all(r[1] for r in rows[:len(hits)]), "비교 대상(직전 이벤트) 표시"
-link = [ws.cell(r, 4) for r in range(h, h + 15) if ws.cell(r, 4).hyperlink]
+link = [ws.cell(r, 2) for r in range(1, h) if ws.cell(r, 2).hyperlink]          # v0.8: 맨 위 한 줄로 이동
 assert link and "확인 필요" in link[0].value and str(len(hits)) in link[0].value, "요약 시트에 건수 + 바로가기"
 print(f"변화 감지 시트 OK — 확인 필요 {len(hits)}건 / {len(rows)}행 · 요약: {link[0].value}")
 # 6) 배치: 요약 핵심 그림 2개 + 결론 메모 칸 · 미시 이벤트 접기 (v0.4)
@@ -112,7 +112,7 @@ assert levels and all(type(im.anchor).__name__ == "TwoCellAnchor" for im in wm._
 links = [c for c in wm[5] if c.hyperlink]
 assert len(links) == 4, "미시 바로가기 4개"
 # 7) v0.5: WU -100 제외 · 색좌표 확대 그림 · NG 이력 이미지 링크 없음
-alarm = [ws.cell(r, 2).value for r in range(h, h + 8) if "WU -100" in str(ws.cell(r, 2).value)]
+alarm = [ws.cell(r, 2).value for r in range(1, h) if "WU -100" in str(ws.cell(r, 2).value)]   # v0.8: 표 위로
 assert alarm and "이벤트 C 3건" in alarm[0], alarm
 c_row = next(r for r in range(h + 1, h + 5) if ws.cell(r, 2).value == "이벤트 C")
 assert "(−3)" in str(ws.cell(c_row, 5).value), ws.cell(c_row, 5).value
@@ -128,6 +128,26 @@ assert abs(ws.cell(c_row, 6).value - exp) < 0.006 and len(g) == 809, (ws.cell(c_
 assert len(wb["트렌드(거시)"]._images) == 8, "거시: 색좌표 전체 + 확대"
 assert len(wm._images) == 4 * 3 + 4 * 2 - 1, "미시: 이벤트마다 색좌표 이동 2장 (G10은 BU 없음)"
 print(f"WU -100 제외 OK — {alarm[0][:40]}… · 이벤트 C WU 평균 {exp} (n=809)")
+# 7-1) v0.8 배치: 노트북 한 화면 폭 · 이벤트 색 · 구역 바로가기 · 미시는 표 먼저
+def right_px(ws_, im):
+    m = im.anchor._from
+    x = sum(tr._col_px(ws_, k) for k in range(1, m.col + 1))
+    return x + im.anchor.ext.width / 9525                       # 그림 폭 = 저장된 anchor 크기(EMU)
+for name in ("이벤트 요약", "트렌드(거시)"):
+    w_ = wb[name]
+    widest = max(right_px(w_, im) for im in w_._images)
+    assert widest <= 1290, (name, widest)
+assert sum(tr._col_px(ws, k) for k in range(1, 19)) <= 1290, "요약 표 폭"
+for r in range(h + 1, h + 5):
+    assert ws.cell(r, 2).border.left.style == "thick", "이벤트 이름 칸 색 막대"
+assert any(ws.cell(r, 2).value == "칸 색 = Cp·Cpk 등급" for r in range(h, h + 8)), "등급 색 범례"
+wg = wb["트렌드(거시)"]
+toc = [c for c in wg[5] if c.hyperlink]
+assert [c.value[2:] for c in toc] == ["BU·WU 분포", "공정능력(Cp·Cpk) · NG율", "White 색좌표", "White 휘도 · CR"], [c.value for c in toc]
+first_tbl = next(r for r in range(1, 60) if wm.cell(r, 2).value == "측정일")
+first_img = min(im.anchor._from.row + 1 for im in wm._images)
+assert first_tbl < first_img, "미시: 측정일별 표가 그래프보다 먼저"
+print(f"v0.8 배치 OK — 요약·거시 그림 오른쪽 끝 ≤ 1290px · 거시 구역 {len(toc)}개 · 미시 표 먼저")
 # 8) v0.6: 진행률 콜백 · 휘도/CR 박스플롯 · 메모리 수정 함수
 prog = []
 tr.generate(DB, ["이벤트 A", "이벤트 B", "이벤트 C"], OUT / "트렌드리포트_WINE.xlsx", log=print,
@@ -141,4 +161,4 @@ d1, e1, n = db.set_label_df(d0, e0, [("이벤트 B", key)], "이벤트 A")
 assert n > 0 and (d1[db.LABEL] == "이벤트 B").sum() == 0 and (d0[db.LABEL] == "이벤트 B").sum() == n, "메모리 수정은 원본을 안 바꿈"
 d2, e2 = db.rename_event_df(d1, e1, "이벤트 A", "이벤트 A2", "메모")
 assert "이벤트 A2" in set(e2["이벤트명"]) and (d2[db.LABEL] == "이벤트 A2").sum() == (d1[db.LABEL] == "이벤트 A").sum()
-print("트렌드 리포트 v0.7 시험 통과")
+print("트렌드 리포트 v0.8 시험 통과")

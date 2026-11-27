@@ -43,11 +43,15 @@ HELP = [
 ]
 
 
+SCAN_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp")
+OUTPUT_DIR_SUFFIXES = ("_LotID_latest_v1", "_LotID_latest_v1_cropped_v1")   # 이 툴의 결과 폴더
+
+
 def get_pipeline():
     from BU_organize_one_click_v05 import PipelineCancelled, run_pipeline
     return PipelineCancelled, run_pipeline
 
-APP_TITLE = "NEOVUE_BU_DATA_정리_v0.7"
+APP_TITLE = "NEOVUE_BU_DATA_정리_v0.8"
 AUTHOR_NAME = "(made by Kwakwonyong)"
 APP_NAME = f"{APP_TITLE} {AUTHOR_NAME}"
 ICON_FILENAME = "neovue_bu_data.ico"
@@ -607,23 +611,27 @@ class BUOrganizeApp:
             msg = "⚠ 폴더가 없습니다 — 경로를 확인하세요"
         elif title == "이미지 통합 폴더":
             n_dir = n_img = 0
-            try:
-                for d in root.rglob("*"):
-                    if d.is_dir() and any(f.suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp") for f in d.iterdir()):
+            try:                                   # v0.8: 폴더를 한 번만 훑음 (예전엔 세 번)
+                for dirpath, _dirs, files in os.walk(root):
+                    k = sum(1 for f in files if os.path.splitext(f)[1].lower() in SCAN_IMAGE_EXTS)
+                    n_img += k
+                    if k and dirpath != str(root):
                         n_dir += 1
-                    if n_dir > 5000:
-                        break
-                n_img = sum(1 for f in root.rglob("*") if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp"))
             except OSError:
                 pass
             msg = (f"✓ 이미지가 든 Lot ID 폴더 {n_dir:,}개 · 이미지 {n_img:,}장" if n_dir
                    else "⚠ 이미지가 든 폴더가 없습니다 — 한 단계 위·아래 폴더인지 확인")
         else:
-            try:
-                n_csv = sum(1 for f in root.rglob("*.csv") if "lmk" in f.name.lower())
-                n_all = sum(1 for _ in root.rglob("*.csv"))
+            n_csv = n_all = 0
+            try:                                   # v0.8: 한 번만 훑고, 이 툴의 결과 폴더(이미지 수천 장)는 건너뜀
+                for _dirpath, dirs, files in os.walk(root):
+                    dirs[:] = [d for d in dirs if not d.endswith(OUTPUT_DIR_SUFFIXES)]
+                    for f in files:
+                        if f.lower().endswith(".csv"):
+                            n_all += 1
+                            n_csv += "lmk" in f.lower()
             except OSError:
-                n_csv = n_all = 0
+                pass
             msg = (f"✓ 측정 CSV(LMK6) {n_csv:,}개" + (f" · 다른 CSV {n_all - n_csv:,}개" if n_all > n_csv else "")
                    if n_csv else ("⚠ LMK6 CSV가 없습니다" + (f" (CSV {n_all}개는 있음)" if n_all else "")
                                   + " — 폴더를 확인하세요"))

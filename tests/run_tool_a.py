@@ -1,4 +1,4 @@
-"""Tool A v1.6.1 처리 로직을 화면 없이 끝까지 실행해 검증.
+"""Tool A v1.6.2 처리 로직을 화면 없이 끝까지 실행해 검증.
 사용: python run_tool_a.py <testdata 폴더> <출력 폴더>
 - 이벤트 A(3일치): 공정능력 시트 + 누적 DB 적재
 - 이벤트 B·C: 통합정리 파일만 생성(Tool C 과거 파일 업로드 시험용)
@@ -107,4 +107,4 @@ for hogi, col_name, head in (("3호기", "LVDataLog.csv", H3), ("4호기", "CA41
     assert all(v == "1B" for k, v in got.items() if k != ids[0].replace("-", "")), got
     assert r["db"] == (6, 0), r["db"]
     print(f"v1.6.1 {hogi} ({col_name}) 형상 OK — 짝 파일 · 중복 제거 · EEPROM '06' 유지 · DB 6행")
-print("Tool A v1.6.1 시험 통과")
+print("Tool A v1.6.2 시험 통과")

@@ -62,7 +62,14 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["matplotlib.backends.backend_qtagg", "PyQt5", "PySide6", "scipy"],
+    excludes=["matplotlib.backends.backend_qtagg", "PyQt5", "PySide6", "scipy",
+              # 시작 속도: exe(onefile)는 실행마다 묶인 파일을 전부 풀기 때문에, 이 툴이 쓰지 않는 큰 패키지는 뺌
+              # (설치돼 있으면 pandas 등이 자동으로 끌어오는 것들 — 결과 값과 무관)
+              "PyQt6", "PySide2", "wx", "gi", "IPython", "jedi", "zmq", "tornado", "notebook",
+              "jupyter_client", "jupyter_core", "ipykernel", "pyarrow", "fastparquet", "numba", "llvmlite",
+              "sqlalchemy", "psycopg2", "pymysql", "tables", "h5py", "fsspec", "s3fs", "gcsfs", "botocore",
+              "boto3", "xlsxwriter", "xlrd", "odf", "pyxlsb", "python_calamine", "pytest", "_pytest",
+              "hypothesis", "pandas.tests", "numpy.tests", "matplotlib.tests", "PIL.ImageQt", "docutils", "sphinx"],
     noarchive=False,
     optimize=0,
 )
@@ -75,11 +82,11 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="NEOVUE_OneClick_정리_v1.6.1",
+    name="NEOVUE_OneClick_정리_v1.6.2",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,                 # UPX 압축은 실행할 때마다 풀어야 해서 시작이 느려짐
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,

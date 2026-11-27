@@ -1,4 +1,4 @@
-"""Tool B v0.7 시험 (화면 없이): 시험용 BU/WU 이미지 + 측정 CSV → crop_report.xlsx
+"""Tool B v0.8 시험 (화면 없이): 시험용 BU/WU 이미지 + 측정 CSV → crop_report.xlsx
 사용: python run_tool_b.py <testdata 폴더> <출력 폴더>
 1) 결과 시트는 v0.5와 같은지 (v0.5 = git 이전 버전 코드로 같은 입력 실행해서 비교)
 2) 공정능력 시트: 판정 = 측정 CSV 전체, 정리본 = 이미지 있는 LotID → Tool A와 같은 계산 값
@@ -119,4 +119,63 @@ res = tb.run_pipeline(img_root, data_root, 12, 20)
 ws = load_workbook(res["excel_path"])["공정능력_BU_WU"]
 assert ws.cell(8, 13).value == "N/A (LD 모델)", ws.cell(8, 13).value      # M열 = 판정
 print("G10 LD OK — BU N/A")
-print("Tool B v0.7 시험 통과")
+# 4) v0.8: 다시 실행하면 바뀐 이미지만 복사·자르기 — 결과는 처음부터 만든 것과 같아야 함
+import contextlib  # noqa: E402
+import hashlib  # noqa: E402
+import io  # noqa: E402
+
+
+def run_quiet(*a, **k):
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        r = tb.run_pipeline(*a, **k)
+    return r, buf.getvalue()
+
+
+def snapshot(img_root_):
+    out = {}
+    for sub in ("_LotID_latest_v1", "_LotID_latest_v1_cropped_v1"):
+        d = img_root_.parent / f"{img_root_.name}{sub}"
+        for f in sorted(d.rglob("*")):
+            if f.is_file() and f.name not in ("crop_report.xlsx", tb.CROP_CACHE_NAME):
+                out[sub + "/" + str(f.relative_to(d))] = hashlib.md5(f.read_bytes()).hexdigest()
+    return out
+
+
+def report(img_root_):
+    x_ = img_root_.parent / f"{img_root_.name}_LotID_latest_v1_cropped_v1" / "crop_report.xlsx"
+    ws_ = load_workbook(x_)["결과"]
+    return [[c.value for c in r] for r in ws_.iter_rows()], [hashlib.md5(i._data()).hexdigest() for i in ws_._images]
+
+
+img_root, data_root, rows, pick = make_case("A_0418", 60, seed=5)
+_, log1 = run_quiet(img_root, data_root, 12, 20)
+first, rep1 = snapshot(img_root), report(img_root)
+_, log2 = run_quiet(img_root, data_root, 12, 20)
+assert "새로 복사 0개" in log2 and "새로 자름 0개" in log2, log2
+assert snapshot(img_root) == first and report(img_root) == rep1, "재실행 결과가 처음과 다름"
+# 이미지 1장 바꾸고, Lot 하나 빼고, 다시 실행 → 바뀐 것만 처리, 뺀 Lot은 결과에서도 사라짐
+lot_dirs = sorted(d for d in img_root.iterdir() if d.is_dir())
+gone = lot_dirs[0].name
+shutil.rmtree(lot_dirs[0])
+im_path = next(lot_dirs[1].glob("*_BU_1.png"))
+im = Image.new("RGB", (200, 120), "black")
+ImageDraw.Draw(im).rectangle([10, 10, 150, 100], fill=(70, 70, 70))
+im.save(im_path)
+_, log3 = run_quiet(img_root, data_root, 12, 20)
+assert "새로 복사 1개" in log3 and "새로 자름 1개" in log3, log3
+fresh_root = OUT / "A_0418_fresh" / "BU Image"
+shutil.copytree(img_root, fresh_root)
+run_quiet(fresh_root, data_root, 12, 20)
+assert snapshot(img_root) == snapshot(fresh_root), "증분 결과 ≠ 새로 만든 결과"
+assert report(img_root) == report(fresh_root), "엑셀 결과 시트 ≠ 새로 만든 결과"
+assert not any(gone in k for k in snapshot(img_root)), "뺀 Lot 결과가 남아 있음"
+# 여백(설정)을 바꾸면 전부 다시 자름
+_, log4 = run_quiet(img_root, data_root, 12, 10)
+assert "재사용" not in log4, log4
+# 측정 CSV는 결과 폴더(이미지 수천 장)를 훑지 않음 — 결과 폴더에 LMK6 CSV를 넣어도 개수 그대로
+shutil.copy(data_root / "LMK6DataLog.csv", img_root.parent / "BU Image_LotID_latest_v1" / "LMK6DataLog.csv")
+_, log5 = run_quiet(img_root, img_root.parent, 12, 10)
+assert "대상 파일: 1개" in log5, [l for l in log5.splitlines() if "CSV" in l]
+print("v0.8 증분 처리 OK — 재실행 0장 처리 · 바뀐 1장만 · 새로 만든 결과와 같음 · 설정 바꾸면 전부 다시")
+print("Tool B v0.8 시험 통과")

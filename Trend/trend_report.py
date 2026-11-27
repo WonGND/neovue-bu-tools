@@ -30,7 +30,7 @@ import charts as CHARTS  # noqa: E402
 import history_db as db  # noqa: E402
 from capability import SPECS, capability, grade, is_constant, is_invalid_wu  # noqa: E402
 
-VERSION = "v0.7"
+VERSION = "v0.8"
 FONT = "맑은 고딕"
 DEFAULT_SETTINGS = {
     "bu_sigma_increase_pct": 20.0,      # 직전 이벤트 대비 BU σ 증가 경고(%)
@@ -184,6 +184,69 @@ def _img(ws, png: bytes, anchor: str, width_px: int, two_cell: bool = False) -> 
 
 def _r(v, nd=2):
     return round(float(v), nd) if v is not None and np.isfinite(v) else "N/A"
+
+
+# ------------------------------------------------------------------ v0.8 배치 도우미 (노트북 1366 화면 폭 기준)
+SCREEN_PX = 1260            # 엑셀 창(노트북, 100%)에서 가로 스크롤 없이 보이는 폭 — 그림·표를 이 안에 둠
+PAIR_W = 600                # 나란히 놓는 그래프 한 장 폭
+GAP_PX = 12
+GRID_W = 9                  # 거시·미시 시트 열 너비(글자) — 고정해야 그림 위치가 엑셀에서 계산과 같음
+
+
+def _grid(ws, n_cols: int = 40) -> None:
+    ws.column_dimensions["A"].width = 2
+    for k in range(2, n_cols + 1):
+        ws.column_dimensions[get_column_letter(k)].width = GRID_W
+
+
+def _col_at(ws, px: int) -> str:
+    """시트 왼쪽 끝에서 px 이상 떨어진 첫 열 (그림 두 장을 나란히 둘 때 오른쪽 그림 자리)"""
+    x, c = 0, 1
+    while x < px:
+        x += _col_px(ws, c)
+        c += 1
+    return get_column_letter(c)
+
+
+def _hex(color: str) -> str:
+    return color.lstrip("#").upper()
+
+
+def _ev_mark(cell, color: str):
+    """이벤트 이름 칸 왼쪽에 이벤트 색 막대 (그래프와 같은 색)"""
+    b = cell.border
+    cell.border = Border(left=Side(style="thick", color=_hex(color)), right=b.right, top=b.top, bottom=b.bottom)
+
+
+def _section(ws, row: int, text: str, sub: str | None = None) -> int:
+    """구역 제목 (번호 + 이름) — 다음 내용이 시작할 행을 돌려줌"""
+    c = ws.cell(row, 2, text)
+    c.font = Font(name=FONT, size=12, bold=True, color="1E3A5F")
+    for cc in range(2, 2 + 18):
+        ws.cell(row, cc).border = Border(bottom=Side(style="medium", color="1E3A5F"))
+    if sub:
+        ws.cell(row + 1, 2, sub).font = Font(name=FONT, size=9, color="6B7280")
+        return row + 3
+    return row + 2                                   # 제목과 그래프 사이 한 줄 여백
+
+
+def _event_legend(ws, row: int, labels, colors) -> None:
+    ws.cell(row, 2, "이벤트 색").font = Font(name=FONT, size=9, bold=True, color="6B7280")
+    for i, (lab, col) in enumerate(zip(labels, colors)):
+        c = ws.cell(row, 3 + i * 2, f"■ {lab}")
+        c.font = Font(name=FONT, size=10, bold=True, color=_hex(col))
+
+
+def _grade_legend(ws, row: int, col: int) -> None:
+    """칸 색 = Cp·Cpk 등급 (표 아래 범례)"""
+    ws.cell(row, col, "칸 색 = Cp·Cpk 등급").font = Font(name=FONT, size=9, bold=True, color="6B7280")
+    for i, (txt, fill) in enumerate((("양호 ≥1.67", "D1FAE5"), ("적합 ≥1.33", "DBEAFE"),
+                                     ("주의 ≥1.00", "FEF3C7"), ("부적합 <1.00", "FEE2E2"))):
+        c = ws.cell(row, col + 2 + i * 2, txt)
+        c.fill = PatternFill("solid", fgColor=fill)
+        c.font = Font(name=FONT, size=9, color="374151")
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        ws.merge_cells(start_row=row, start_column=col + 2 + i * 2, end_row=row, end_column=col + 3 + i * 2)
 
 
 # ------------------------------------------------------------------ 리포트
@@ -369,26 +432,48 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
     log(f"리포트 대상: {', '.join(labels)} (총 {len(data)}행)")
 
     step(12, "이벤트 요약 · 변화 감지")
+    ev_colors = dict(zip(labels, CHARTS.event_colors(len(labels))))     # v0.8: 이벤트 색 — 모든 그래프·표 같은 색
     wb = Workbook()
-    # ---- 1. 이벤트 요약 + 변화 감지
+    # ---- 1. 이벤트 요약 (v0.8: 노트북 한 화면 폭 안에 — 위: 변화 감지 한 줄 · 한눈 보드 + Cpk 추이, 아래: 표 · 메모)
     ws = wb.active
     ws.title = "이벤트 요약"
     ws.sheet_view.showGridLines = False
-    for col, w in zip("ABCDEFGHIJKLMNOPQRS", (2, 14, 22, 12, 7, 9, 8, 8, 9, 8, 8, 8, 10, 9, 9, 9, 8, 24, 2)):
+    for col, w in zip("ABCDEFGHIJKLMNOPQRS", (2, 12, 21, 9, 7) + (8,) * 12 + (18, 2)):
         ws.column_dimensions[col].width = w
     _title(ws, "B2", "트렌드 리포트 — 이벤트 요약",
-           f"BU_TREND {VERSION} · {datetime.now():%Y-%m-%d %H:%M} · 대상: {', '.join(labels)} · "
-           "이벤트 안 동일 LotID는 최신 1건 · Cp/Cpk 같은 기준 색상")
-    # v0.4: 핵심 그림 — A 한눈 보드(최신 이벤트 KPI + 이벤트별 신호등) · B Cpk 추이 + NG율
+           f"BU_TREND {VERSION} · {datetime.now():%Y-%m-%d %H:%M} · 대상: {', '.join(labels)} · 이벤트 안 동일 LotID는 최신 1건")
     flags, n_hit = _change_detection(stats, st)
     warn = [None] + [sum(1 for f in flags if f[0] == s["name"] and f[6].startswith("⚠")) for s in stats[1:]]
+    # 변화 감지 결과를 맨 위 한 줄로 (눌러서 '변화 감지' 시트로)
+    if flags:
+        msg = (f"⚠ 변화 감지: 직전 이벤트 대비 확인 필요 {n_hit}건 → '변화 감지' 시트" if n_hit
+               else "✓ 변화 감지: 직전 이벤트 대비 모든 항목이 기준 이내 → '변화 감지' 시트")
+    else:
+        msg = "변화 감지: 비교할 이벤트가 2개 이상일 때 '변화 감지' 시트에 표시됩니다."
+    c = ws.cell(4, 2, msg)
+    c.font = Font(name=FONT, size=11, bold=True, color="B91C1C" if n_hit else ("15803D" if flags else "6B7280"),
+                  underline="single" if flags else None)
+    c.hyperlink = "#'변화 감지'!A1"
+    top = 5
+    if invalid_msg:
+        c = ws.cell(5, 2, invalid_msg)
+        c.font = Font(name=FONT, size=10, bold=True, color="B91C1C")
+        top = 6
+    top += 1
     board_rows = [{"name": s["name"], "period": s["period"], "n": len(s["g"]), "wu_cpk": s["cw"].cpk,
-                   "bu_cpk": None if s["ld"] else s["cb"].cpk, "ng": s["ng"], "warn": w} for s, w in zip(stats, warn)]
-    h1 = _img(ws, CHARTS.summary_board(board_rows), "B5", 780)
+                   "bu_cpk": None if s["ld"] else s["cb"].cpk, "ng": s["ng"], "warn": w, "color": ev_colors[s["name"]]}
+                  for s, w in zip(stats, warn)]
+    board_w = 690
+    h1 = _img(ws, CHARTS.summary_board(board_rows), f"B{top}", board_w)
+    left = _col_px(ws, 1) + board_w + GAP_PX
+    right_col = _col_at(ws, left)
+    used = sum(_col_px(ws, k) for k in range(1, column_index_from_string(right_col)))
+    total = sum(_col_px(ws, k) for k in range(1, 19))
     h2 = _img(ws, CHARTS.cpk_ng_combo(labels, [s["cw"].cpk for s in stats],
                                       [None if s["ld"] else s["cb"].cpk for s in stats], [s["ng"] for s in stats],
-                                      warn, "Cpk 추이 + NG율 (WU<80 또는 BU<50)"), "L5", 570)
-    top = 5 + max(h1, h2)
+                                      warn, "Cpk 추이 + NG율 (WU<80 또는 BU<50)"), f"{right_col}{top}",
+              max(420, min(560, total - used)))
+    top = top + max(h1, h2) + 1
     hdr = ["이벤트", "기간", "모델", "n", "WU 평균", "WU Cp", "WU Cpk", "BU 평균", "BU σ", "BU Cp", "BU Cpk",
            "W 휘도 평균", "CR 평균", "W x", "W y", "NG율", "메모"]
     rows, fills = [], {}
@@ -400,31 +485,19 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
                      _r(s["lv"], 1), _r(s["cr"], 0), _r(s["wx"], 4), _r(s["wy"], 4), f"{s['ng']:.1f}%", s["memo"]])
         for j, v in ((5, cw.cp), (6, cw.cpk)) + (() if s["ld"] else ((9, cb.cp), (10, cb.cpk))):
             fills[(i, j)] = grade(v)[1]
-    ws.cell(top, 2, "이벤트 요약").font = Font(name=FONT, size=11, bold=True, color="1E3A5F")
+    ws.cell(top, 2, "이벤트 요약").font = Font(name=FONT, size=12, bold=True, color="1E3A5F")
     r = _table(ws, top + 1, 2, hdr, rows, fills)
     ws.auto_filter.ref = f"B{top + 1}:R{r - 1}"
-    if invalid_msg:
-        c = ws.cell(r, 2, invalid_msg)
-        c.font = Font(name=FONT, size=10, bold=True, color="B91C1C")
-        for i, s_ in enumerate(stats):                 # 해당 이벤트의 n 칸에 표시
-            if s_["n_invalid"]:
-                cell = ws.cell(top + 2 + i, 5)
-                cell.value = f"{len(s_['g'])} (−{s_['n_invalid']})"
-                cell.fill = PatternFill("solid", fgColor="FEE2E2")
-        r += 1
-    r += 1
-    ws.cell(r, 2, "변화 감지").font = Font(name=FONT, size=11, bold=True, color="1E3A5F")
-    if flags:
-        msg = (f"직전 이벤트 대비 확인 필요 {n_hit}건 → '변화 감지' 시트" if n_hit
-               else "직전 이벤트 대비 모든 항목이 기준 이내 → '변화 감지' 시트")
-    else:
-        msg = "비교할 이벤트가 2개 이상일 때 '변화 감지' 시트에 표시됩니다."
-    c = ws.cell(r, 4, msg)
-    c.font = Font(name=FONT, size=10, bold=bool(n_hit), color="B91C1C" if n_hit else "15803D", underline="single")
-    c.hyperlink = "#'변화 감지'!A1"
-    # 결론 메모 칸 (사람이 작성)
+    for i, s_ in enumerate(stats):
+        _ev_mark(ws.cell(top + 2 + i, 2), ev_colors[s_["name"]])
+        if s_["n_invalid"]:                            # 해당 이벤트의 n 칸에 표시
+            cell = ws.cell(top + 2 + i, 5)
+            cell.value = f"{len(s_['g'])} (−{s_['n_invalid']})"
+            cell.fill = PatternFill("solid", fgColor="FEE2E2")
+    _grade_legend(ws, r, 2)
     r += 2
-    ws.cell(r, 2, "결론 메모").font = Font(name=FONT, size=11, bold=True, color="1E3A5F")
+    # 결론 메모 칸 (사람이 작성)
+    ws.cell(r, 2, "결론 메모").font = Font(name=FONT, size=12, bold=True, color="1E3A5F")
     ws.cell(r, 4, "직접 작성 — 예: 'C는 BU 산포 증가, 자재 Lot 확인 중'").font = Font(name=FONT, size=9, color="9CA3AF")
     ws.merge_cells(start_row=r + 1, start_column=2, end_row=r + 4, end_column=18)
     memo = ws.cell(r + 1, 2)
@@ -439,45 +512,75 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
     _change_sheet(wb, flags, st, invalid_msg)
 
     step(28, "트렌드(거시) 그래프")
-    # ---- 2. 트렌드(거시)
+    # ---- 2. 트렌드(거시) — v0.8: 주제별 구역(번호 제목) · 한 구역 = 그래프 2장 나란히 · 맨 위 바로가기
     ws2 = wb.create_sheet("트렌드(거시)")
     ws2.sheet_view.showGridLines = False
-    _title(ws2, "B2", "트렌드 그래프 — 이벤트 간 비교 (거시)", "박스플롯: 상자=사분위, 선=1.5×IQR, 점=이상치 · 최신 이벤트 파란색")
-    row = 5
+    _grid(ws2)
+    _title(ws2, "B2", "트렌드 그래프 — 이벤트 간 비교 (거시)",
+           "같은 이벤트는 모든 그래프에서 같은 색 (최신 이벤트 = 파랑) · 박스플롯: 상자=사분위, 선=1.5×IQR, 점=이상치")
+    _event_legend(ws2, 4, labels, [ev_colors[x] for x in labels])
+    right2 = _col_at(ws2, _col_px(ws2, 1) + PAIR_W + GAP_PX)
+    sections = []
     if "BU·WU" in metrics:
-        bu_groups = {s["name"]: s["g"]["BU"].dropna() for s in stats if not s["ld"]}
-        if bu_groups:
-            _img(ws2, CHARTS.boxplot_groups(bu_groups, "BU", SPECS["BU"][0], "BU 분포 (이벤트별)"), f"B{row}", 600)
-        _img(ws2, CHARTS.boxplot_groups({s["name"]: s["g"]["WU"].dropna() for s in stats}, "WU", SPECS["WU"][0],
-                                        "WU 분포 (이벤트별)"), f"L{row}", 600)
-        row += 24
-        series = {"WU Cp": [s["cw"].cp for s in stats], "WU Cpk": [s["cw"].cpk for s in stats],
-                  "BU Cp": [np.nan if s["ld"] else s["cb"].cp for s in stats],
-                  "BU Cpk": [np.nan if s["ld"] else s["cb"].cpk for s in stats]}
-        _img(ws2, CHARTS.cp_cpk_bars(labels, series, "Cp · Cpk 추이 (이벤트별)"), f"B{row}", 600)
-        _img(ws2, CHARTS.ng_rate_line(labels, [s["ng"] for s in stats], "NG율 추이 (WU<80 또는 BU<50)"), f"L{row}", 600)
-        row += 24
+        sections.append(("BU·WU 분포", "bu_wu"))
+        sections.append(("공정능력(Cp·Cpk) · NG율", "cpk"))
     if "White x/y" in metrics:
-        models = [str(s["model"]) for s in stats]
-        model = max(set(models), key=models.count) if models else ""
-        typ = _typ(model, st)
-        title = "White 색좌표 평균 이동 (GCS 원 안이면 OK)" if typ else f"White 색좌표 평균 이동 (모델 '{model}' Typ 미설정 → 원 생략)"
-        _img(ws2, CHARTS.white_xy(labels, [s["wx"] for s in stats], [s["wy"] for s in stats],
-                                  typ, st["gcs"], title), f"B{row}", 480)
-        # v0.5: 실제 측정점이 있는 영역 확대 — 이벤트별 분포(점)·평균 ± 2σ 타원으로 영역 차이 비교
-        _img(ws2, CHARTS.white_xy_cloud({s["name"]: (s["g"]["White_x"], s["g"]["White_y"]) for s in stats}, typ, st["gcs"],
-                                        "White 색좌표 분포 확대 (점=측정 · 타원=평균±2σ)"), f"B{row + 22}", 480)
+        sections.append(("White 색좌표", "xy"))
     if "White 휘도·CR" in metrics:
-        # v0.6: 휘도·CR도 BU/WU와 같은 박스플롯 (상자=사분위, 수염=1.5×IQR, 점=이상치)
-        _img(ws2, CHARTS.boxplot_groups({s["name"]: s["g"]["White_LV"] for s in stats}, "White 휘도", None,
-                                        "White 휘도 분포 (이벤트별)", unit="cd/m²"), f"L{row}", 600)
-        row += 22
-        _img(ws2, CHARTS.boxplot_groups({s["name"]: s["g"]["CR"] for s in stats}, "CR", None,
-                                        "CR 분포 (이벤트별)", unit=""), f"L{row}", 600)
+        sections.append(("White 휘도 · CR", "lv"))
+    ws2.cell(5, 2, "바로가기").font = Font(name=FONT, size=9, bold=True, color="6B7280")
+    toc2 = []
+    for i, (name, _) in enumerate(sections):
+        c = ws2.cell(5, 3 + i * 3, f"{'①②③④'[i]} {name}")
+        c.font = Font(name=FONT, size=10, color="2563EB", underline="single")
+        toc2.append(c)
+    row = 7
+    for i, ((name, key), toc) in enumerate(zip(sections, toc2)):
+        toc.hyperlink = f"#'트렌드(거시)'!B{row}"
+        row = _section(ws2, row, f"{'①②③④'[i]} {name}")
+        hs = []
+        if key == "bu_wu":
+            bu_groups = {s["name"]: s["g"]["BU"].dropna() for s in stats if not s["ld"]}
+            if bu_groups:
+                hs.append(_img(ws2, CHARTS.boxplot_groups(bu_groups, "BU", SPECS["BU"][0], "BU 분포 (이벤트별)",
+                                                          colors=[ev_colors[k] for k in bu_groups]), f"B{row}", PAIR_W))
+            wu_groups = {s["name"]: s["g"]["WU"].dropna() for s in stats}
+            hs.append(_img(ws2, CHARTS.boxplot_groups(wu_groups, "WU", SPECS["WU"][0], "WU 분포 (이벤트별)",
+                                                      colors=[ev_colors[k] for k in wu_groups]),
+                           f"{right2 if bu_groups else 'B'}{row}", PAIR_W))
+        elif key == "cpk":
+            series = {"WU Cp": [s["cw"].cp for s in stats], "WU Cpk": [s["cw"].cpk for s in stats],
+                      "BU Cp": [np.nan if s["ld"] else s["cb"].cp for s in stats],
+                      "BU Cpk": [np.nan if s["ld"] else s["cb"].cpk for s in stats]}
+            hs.append(_img(ws2, CHARTS.cp_cpk_bars(labels, series, "Cp · Cpk 추이 (이벤트별)"), f"B{row}", PAIR_W))
+            hs.append(_img(ws2, CHARTS.ng_rate_line(labels, [s["ng"] for s in stats], "NG율 추이 (WU<80 또는 BU<50)",
+                                                    height=3.4), f"{right2}{row}", PAIR_W))
+        elif key == "xy":
+            models = [str(s["model"]) for s in stats]
+            model = max(set(models), key=models.count) if models else ""
+            typ = _typ(model, st)
+            title = "White 색좌표 평균 이동 (GCS 원 안이면 OK)" if typ else f"White 색좌표 평균 이동 (모델 '{model}' Typ 미설정 → 원 생략)"
+            hs.append(_img(ws2, CHARTS.white_xy(labels, [s["wx"] for s in stats], [s["wy"] for s in stats],
+                                                typ, st["gcs"], title, colors=[ev_colors[x] for x in labels]),
+                           f"B{row}", PAIR_W))
+            # v0.5: 실제 측정점이 있는 영역 확대 — 이벤트별 분포(점)·평균 ± 2σ 타원으로 영역 차이 비교
+            hs.append(_img(ws2, CHARTS.white_xy_cloud({s["name"]: (s["g"]["White_x"], s["g"]["White_y"]) for s in stats},
+                                                      typ, st["gcs"], "White 색좌표 분포 확대 (점=측정 · 타원=평균±2σ)"),
+                           f"{right2}{row}", PAIR_W))
+        else:
+            # v0.6: 휘도·CR도 BU/WU와 같은 박스플롯 (상자=사분위, 수염=1.5×IQR, 점=이상치)
+            hs.append(_img(ws2, CHARTS.boxplot_groups({s["name"]: s["g"]["White_LV"] for s in stats}, "White 휘도", None,
+                                                      "White 휘도 분포 (이벤트별)", unit="cd/m²",
+                                                      colors=[ev_colors[x] for x in labels]), f"B{row}", PAIR_W))
+            hs.append(_img(ws2, CHARTS.boxplot_groups({s["name"]: s["g"]["CR"] for s in stats}, "CR", None,
+                                                      "CR 분포 (이벤트별)", unit="", colors=[ev_colors[x] for x in labels]),
+                           f"{right2}{row}", PAIR_W))
+        row += max(hs + [1]) + 1
 
-    # ---- 3. 측정일별(미시)
+    # ---- 3. 측정일별(미시) — v0.8: 이벤트마다 ① 측정일별 표(숫자 먼저) → ② BU·WU 박스플롯 → ③ Cp·Cpk 추이 → ④ 색좌표
     ws3 = wb.create_sheet("측정일별(미시)")
     ws3.sheet_view.showGridLines = False
+    _grid(ws3)
     _title(ws3, "B2", "측정일별 비교 — 이벤트 안 (미시)",
            f"일자 평균이 이벤트 평균에서 {st['daily_mean_dev_sigma']}σ 이상 벗어나면 표시 · 당일 컨디션 편차 확인용")
     # v0.4: 맨 위 바로가기 + 이벤트마다 행 그룹(왼쪽 ＋/－ 로 접기, 그림도 같이 접힘)
@@ -487,44 +590,28 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
         Font(name=FONT, size=9, color="6B7280")
     toc_cells = []
     for i, s in enumerate(stats):
-        cc = ws3.cell(5, 2 + i * 3, s["name"])
-        cc.font = Font(name=FONT, size=10, color="2563EB", underline="single")
+        cc = ws3.cell(5, 2 + i * 3, f"■ {s['name']}")
+        cc.font = Font(name=FONT, size=10, bold=True, color=_hex(ev_colors[s["name"]]), underline="single")
         toc_cells.append(cc)
+    right3 = _col_at(ws3, _col_px(ws3, 1) + PAIR_W + GAP_PX)
+    wide_w = sum(_col_px(ws3, k) for k in range(2, column_index_from_string(right3))) + PAIR_W
     row = 7
     for k_ev, (s, toc) in enumerate(zip(stats, toc_cells)):
         step(45 + 40 * k_ev / max(1, len(stats)), f"측정일별(미시) — {s['name']} ({k_ev + 1}/{len(stats)})")
         g = s["g"].copy()
         g["d"] = pd.to_datetime(g["측정일"]).dt.strftime("%m-%d")
-        ws3.cell(row, 2, f"■ {s['name']}  ({s['period']})" + (f"  메모: {s['memo']}" if s["memo"] else "")).font = \
-            Font(name=FONT, size=11, bold=True, color="1E3A5F")
+        head = ws3.cell(row, 2, f"■ {s['name']}  ({s['period']})" + (f"  메모: {s['memo']}" if s["memo"] else ""))
+        head.font = Font(name=FONT, size=13, bold=True, color=_hex(ev_colors[s["name"]]))
+        for cc in range(2, 2 + 18):
+            ws3.cell(row, cc).border = Border(bottom=Side(style="medium", color=_hex(ev_colors[s["name"]])))
         toc.hyperlink = f"#'측정일별(미시)'!B{row}"
         head_row = row
         row += 2
         days = sorted(g["d"].unique())
-        hs = []
-        if not s["ld"]:
-            hs.append(_img(ws3, CHARTS.boxplot_groups({d: g.loc[g.d == d, "BU"].dropna() for d in days}, "BU", SPECS["BU"][0],
-                                                      "BU 측정일별", width=5.0, highlight_last=False), f"B{row}", 430, True))
-        hs.append(_img(ws3, CHARTS.boxplot_groups({d: g.loc[g.d == d, "WU"].dropna() for d in days}, "WU", SPECS["WU"][0],
-                                                  "WU 측정일별", width=5.0, highlight_last=False), f"I{row}", 430, True))
         daily = []
         for d in days:
             gd = g[g.d == d].sort_values("측정일시")
             daily.append((d, len(gd), capability(gd["WU"], "WU"), capability(gd["BU"], "BU", ld=s["ld"])))
-        _img(ws3, CHARTS.daily_cpk_line(days, [x[2].cpk for x in daily], [np.nan if s["ld"] else x[3].cpk for x in daily],
-                                        s["memo"], "측정일별 Cp · Cpk", wu_cp=[x[2].cp for x in daily],
-                                        bu_cp=None if s["ld"] else [x[3].cp for x in daily]), f"P{row}", 460, True)
-        row += max(hs + [18])
-        if "White x/y" in metrics:                     # v0.5: 측정일별 색좌표 이동 (GCS 원 기준 + 확대)
-            typ = _typ(s["model"], st)
-            dx = [g.loc[g.d == d, "White_x"].mean() for d in days]
-            dy = [g.loc[g.d == d, "White_y"].mean() for d in days]
-            t1 = "측정일별 White 색좌표 이동 (GCS 원)" if typ else "측정일별 White 색좌표 이동 (Typ 미설정)"
-            hx = [_img(ws3, CHARTS.white_xy(days, dx, dy, typ, st["gcs"], t1, width=4.6, height=3.6), f"B{row}", 400, True),
-                  _img(ws3, CHARTS.white_xy_cloud({d: (g.loc[g.d == d, "White_x"], g.loc[g.d == d, "White_y"]) for d in days},
-                                                  typ, st["gcs"], "측정일별 색좌표 분포 확대 (점=측정 · 타원=평균±2σ)",
-                                                  width=4.6, height=3.6), f"I{row}", 400, True)]
-            row += max(hx) + 1
         k = st["daily_mean_dev_sigma"]
         trows, tf = [], {}
         for i, (d, n, cw, cb) in enumerate(daily):
@@ -537,7 +624,31 @@ def generate(db_path, selected_events: list[str], out_path, metrics=("BU·WU", "
                 tf[(i, j)] = grade(v)[1]
             if dev_w or dev_b:
                 tf[(i, 8)] = "FEF3C7"
-        row = _table(ws3, row, 2, ["측정일", "n", "WU 평균", "WU Cp", "WU Cpk", "BU 평균", "BU Cp", "BU Cpk", "판정"], trows, tf) + 1
+        row = _table(ws3, row, 2, ["측정일", "n", "WU 평균", "WU Cp", "WU Cpk", "BU 평균", "BU Cp", "BU Cpk", "판정"], trows, tf)
+        _grade_legend(ws3, row, 2)
+        row += 2
+        hs = []
+        if not s["ld"]:
+            hs.append(_img(ws3, CHARTS.boxplot_groups({d: g.loc[g.d == d, "BU"].dropna() for d in days}, "BU", SPECS["BU"][0],
+                                                      "BU 측정일별", highlight_last=False), f"B{row}", PAIR_W, True))
+        hs.append(_img(ws3, CHARTS.boxplot_groups({d: g.loc[g.d == d, "WU"].dropna() for d in days}, "WU", SPECS["WU"][0],
+                                                  "WU 측정일별", highlight_last=False),
+                       f"{right3 if not s['ld'] else 'B'}{row}", PAIR_W, True))
+        row += max(hs) + 1
+        row += _img(ws3, CHARTS.daily_cpk_line(days, [x[2].cpk for x in daily], [np.nan if s["ld"] else x[3].cpk for x in daily],
+                                               s["memo"], "측정일별 Cp · Cpk", wu_cp=[x[2].cp for x in daily],
+                                               bu_cp=None if s["ld"] else [x[3].cp for x in daily], width=10.6, height=3.2),
+                    f"B{row}", wide_w, True) + 1
+        if "White x/y" in metrics:                     # v0.5: 측정일별 색좌표 이동 (GCS 원 기준 + 확대)
+            typ = _typ(s["model"], st)
+            dx = [g.loc[g.d == d, "White_x"].mean() for d in days]
+            dy = [g.loc[g.d == d, "White_y"].mean() for d in days]
+            t1 = "측정일별 White 색좌표 이동 (GCS 원)" if typ else "측정일별 White 색좌표 이동 (Typ 미설정)"
+            hx = [_img(ws3, CHARTS.white_xy(days, dx, dy, typ, st["gcs"], t1), f"B{row}", PAIR_W, True),
+                  _img(ws3, CHARTS.white_xy_cloud({d: (g.loc[g.d == d, "White_x"], g.loc[g.d == d, "White_y"]) for d in days},
+                                                  typ, st["gcs"], "측정일별 색좌표 분포 확대 (점=측정 · 타원=평균±2σ)"),
+                       f"{right3}{row}", PAIR_W, True)]
+            row += max(hx) + 1
         ws3.row_dimensions.group(head_row + 1, row - 1, outline_level=1, hidden=False)
         row += 1
 
